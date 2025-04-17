@@ -172,7 +172,7 @@ func (q *queue) doEnqueue(ctx context.Context, tx *sql.Tx, skipConflict bool, pl
 
 	rows, err := q.query(tx)(ctx, b.String(), args...)
 	if err != nil {
-		if strings.HasSuffix(err.Error(), `unique constraint "goque_jobs_unique_uidx"`) {
+		if strings.Contains(err.Error(), `unique constraint "goque_jobs_unique_uidx"`) {
 			return nil, &que.ErrQueue{Err: que.ErrViolateUniqueConstraint}
 		}
 		return nil, err
