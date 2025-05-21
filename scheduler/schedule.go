@@ -4,8 +4,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/qor5/go-que"
 	"github.com/robfig/cron/v3"
-	"github.com/tnclong/go-que"
 )
 
 // Schedule is a set of named items.

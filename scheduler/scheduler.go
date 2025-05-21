@@ -8,7 +8,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/tnclong/go-que"
+	"github.com/qor5/go-que"
 )
 
 // Scheduler enqueue jobs according to provided schedule.

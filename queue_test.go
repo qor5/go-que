@@ -17,8 +17,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	"github.com/tnclong/go-que"
-	"github.com/tnclong/go-que/pg"
+	"github.com/qor5/go-que"
+	"github.com/qor5/go-que/pg"
 )
 
 func TestEnqueueLockUnlock(t *testing.T) {
@@ -345,11 +345,13 @@ func TestDone(t *testing.T) {
 		return jb.Done(context.Background())
 	})
 }
+
 func TestDestroy(t *testing.T) {
 	testResolve(t, func(jb que.Job) error {
 		return jb.Destroy(context.Background())
 	})
 }
+
 func TestExpire(t *testing.T) {
 	testResolve(t, func(jb que.Job) error {
 		return jb.Expire(context.Background(), nil)
@@ -604,7 +606,7 @@ func TestParallelLock(t *testing.T) {
 	q := newQueue()
 	qs := randQueue()
 
-	var wantCount = 1 << 8
+	wantCount := 1 << 8
 	var waitGroup sync.WaitGroup
 	var goJobs [5][]que.Job
 	ctx, cancel := context.WithCancel(context.Background())
@@ -683,9 +685,11 @@ func dbTx(t *testing.T, rollback bool, f func(*sql.Tx)) {
 	f(tx)
 }
 
-var dbOnce sync.Once
-var _db *sql.DB
-var _driver string
+var (
+	dbOnce  sync.Once
+	_db     *sql.DB
+	_driver string
+)
 
 func newQueue() que.Queue {
 	dbOnce.Do(func() {

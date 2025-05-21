@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/tnclong/go-que"
+	"github.com/qor5/go-que"
 )
 
 func ExampleWorker() {
