@@ -8,7 +8,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	"github.com/tnclong/go-que"
+	"github.com/qor5/go-que"
 )
 
 // TestSkipConflict tests handling of unique constraint conflicts in a batch.

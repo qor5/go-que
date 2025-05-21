@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/tnclong/go-que"
+	"github.com/qor5/go-que"
 )
 
 type job struct {

@@ -1,25 +1,28 @@
+_Note: This repository is a modified version of [https://github.com/tnclong/go-que](https://github.com/tnclong/go-que) to meet our internal customization needs. Thanks to the original repository._
+
 ## Que
+
 #### A golang background job queue that uses optimized database lock for reliability and speed.
 
 There are benefits of using Que to route jobs:
 
-  * **Transaction** - Controls job along with other changes to your database optional in a transaction.
-  * **Simplify Architecture** - If you're already using database, a separate queue is another moving part that can break.
-  * **Safety** - If a golang process dies, the jobs it's working won't be lost, or left in a locked or ambiguous state - they immediately become available for any other worker to pick up according to RetryPolicy.
-  * **Concurrency** - Workers don't block each other. This allows for high throughput with a large number of workers.
-  * **Uniqueness** - Controls the uniqueness of jobs in same queue.
-  * **Scheduler** - Schedule jobs uses cron expression.
-  * **Customization** - Database let you easy to customizate queue suit for your business requirement.
+- **Transaction** - Controls job along with other changes to your database optional in a transaction.
+- **Simplify Architecture** - If you're already using database, a separate queue is another moving part that can break.
+- **Safety** - If a golang process dies, the jobs it's working won't be lost, or left in a locked or ambiguous state - they immediately become available for any other worker to pick up according to RetryPolicy.
+- **Concurrency** - Workers don't block each other. This allows for high throughput with a large number of workers.
+- **Uniqueness** - Controls the uniqueness of jobs in same queue.
+- **Scheduler** - Schedule jobs uses cron expression.
+- **Customization** - Database let you easy to customizate queue suit for your business requirement.
 
 ## Install
 
 ```bash
-go get github.com/tnclong/go-que
+go get github.com/qor5/go-que
 ```
 
 ## Doc
 
-https://godoc.org/github.com/tnclong/go-que
+https://godoc.org/github.com/qor5/go-que
 
 ## Quickstart
 
@@ -57,8 +60,8 @@ example_test.go
 
 The purpose of benchmark:
 
-  - Guide performace improvement.
-  - Obtain a real WorkerOptions on production with accepted database resource wastage.
+- Guide performace improvement.
+- Obtain a real WorkerOptions on production with accepted database resource wastage.
 
 Run bm:
 

@@ -18,8 +18,8 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
-	"github.com/tnclong/go-que"
-	"github.com/tnclong/go-que/pg"
+	"github.com/qor5/go-que"
+	"github.com/qor5/go-que/pg"
 	"gopkg.in/yaml.v2"
 )
 
@@ -190,7 +190,7 @@ func (b *Benchmark) Run() {
 	db := b.openDB()
 	q := b.newQueue(db)
 
-	var count = b.Enqueue.Count
+	count := b.Enqueue.Count
 
 	metricPerformC := make(chan Latency, count)
 	metricPerformDone := make(chan time.Time, 1)

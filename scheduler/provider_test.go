@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tnclong/go-que"
+	"github.com/qor5/go-que"
 )
 
 var wantSchedule = Schedule{
