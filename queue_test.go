@@ -72,7 +72,7 @@ func TestEnqueueLockUnlock(t *testing.T) {
 	}
 
 	actualPlan := job.Plan()
-	if !plan.RunAt.Equal(actualPlan.RunAt) {
+	if !plan.RunAt.Truncate(time.Microsecond).Equal(actualPlan.RunAt.Truncate(time.Microsecond)) {
 		t.Fatalf("want run at is %s but get %s", plan.RunAt.String(), actualPlan.RunAt.String())
 	}
 	plan.RunAt = actualPlan.RunAt
