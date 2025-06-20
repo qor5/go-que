@@ -62,7 +62,7 @@ func (sc *Scheduler) Prepare(ctx context.Context) error {
 	_, err := sc.Enqueue(ctx, nil, que.Plan{
 		Queue:           sc.Queue,
 		Args:            que.Args(),
-		RunAt:           nowFunc(),
+		RunAt:           NowFunc(),
 		RetryPolicy:     retryPolicy,
 		UniqueID:        &uniqueID,
 		UniqueLifecycle: uniqueLifecycle,
@@ -95,7 +95,7 @@ func (sc *Scheduler) Perform(ctx context.Context, job que.Job) error {
 	if err != nil {
 		log.Panic(sc.sprintf("provide invalid schedule: %v", err))
 	}
-	now := nowFunc()
+	now := NowFunc()
 	namePlans := calculate(schedule, now, args)
 	nameIDs := make(map[string][]int64)
 	sc.inTx(ctx, func(tx *sql.Tx) {
@@ -260,10 +260,10 @@ func decodeArgs(data []byte) (a args, err error) {
 		return
 	}
 	if count == 0 {
-		return args{lastRunAt: nowFunc()}, nil
+		return args{lastRunAt: NowFunc()}, nil
 	}
 	return a, nil
 }
 
-// nowFunc returns the current time; it's overridden in tests.
-var nowFunc = time.Now
+// NowFunc returns the current time; it's overridden in tests.
+var NowFunc = time.Now

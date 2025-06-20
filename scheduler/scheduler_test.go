@@ -22,7 +22,7 @@ func TestDecodeArgs(t *testing.T) {
 	}
 
 	now := time.Now()
-	nowFunc = func() time.Time {
+	NowFunc = func() time.Time {
 		return now
 	}
 	argsData = mustMarshal([]interface{}{})
@@ -385,7 +385,7 @@ func TestSchedulerPerform(t *testing.T) {
 			mockJob := mock.NewMockJob(ctrl)
 			tc.MockJob(ctx, mockJob)
 
-			nowFunc = tc.NowFunc
+			NowFunc = tc.NowFunc
 			scheduler := &Scheduler{
 				DB:          db,
 				Queue:       "que.scheduler",
