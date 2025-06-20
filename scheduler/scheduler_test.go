@@ -22,6 +22,10 @@ func TestDecodeArgs(t *testing.T) {
 	}
 
 	now := time.Now()
+	originalNowFunc := NowFunc
+	t.Cleanup(func() {
+		NowFunc = originalNowFunc
+	})
 	NowFunc = func() time.Time {
 		return now
 	}
@@ -62,6 +66,10 @@ func mustMarshal(e interface{}) []byte {
 }
 
 func TestSchedulerPerform(t *testing.T) {
+	originalNowFunc := NowFunc
+	t.Cleanup(func() {
+		NowFunc = originalNowFunc
+	})
 	tcs := []struct {
 		Name string
 
