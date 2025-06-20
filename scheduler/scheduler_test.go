@@ -66,9 +66,8 @@ func mustMarshal(e interface{}) []byte {
 
 func TestSchedulerPerform(t *testing.T) {
 	originalNowFunc := NowFunc
-	t.Cleanup(func() {
-		NowFunc = originalNowFunc
-	})
+	defer func() { NowFunc = originalNowFunc }()
+
 	tcs := []struct {
 		Name string
 
