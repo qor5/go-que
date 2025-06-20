@@ -21,11 +21,10 @@ func TestDecodeArgs(t *testing.T) {
 		t.Fatal("want a err when decode a json object")
 	}
 
-	now := time.Now()
 	originalNowFunc := NowFunc
-	t.Cleanup(func() {
-		NowFunc = originalNowFunc
-	})
+	defer func() { NowFunc = originalNowFunc }()
+
+	now := time.Now()
 	NowFunc = func() time.Time {
 		return now
 	}
@@ -392,6 +391,9 @@ func TestSchedulerPerform(t *testing.T) {
 			tc.MockQueue(ctx, mockQueue)
 			mockJob := mock.NewMockJob(ctrl)
 			tc.MockJob(ctx, mockJob)
+
+			originalNowFunc := NowFunc
+			defer func() { NowFunc = originalNowFunc }()
 
 			NowFunc = tc.NowFunc
 			scheduler := &Scheduler{
