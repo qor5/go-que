@@ -21,8 +21,11 @@ func TestDecodeArgs(t *testing.T) {
 		t.Fatal("want a err when decode a json object")
 	}
 
+	originalNowFunc := NowFunc
+	defer func() { NowFunc = originalNowFunc }()
+
 	now := time.Now()
-	nowFunc = func() time.Time {
+	NowFunc = func() time.Time {
 		return now
 	}
 	argsData = mustMarshal([]interface{}{})
@@ -62,6 +65,9 @@ func mustMarshal(e interface{}) []byte {
 }
 
 func TestSchedulerPerform(t *testing.T) {
+	originalNowFunc := NowFunc
+	defer func() { NowFunc = originalNowFunc }()
+
 	tcs := []struct {
 		Name string
 
@@ -385,7 +391,10 @@ func TestSchedulerPerform(t *testing.T) {
 			mockJob := mock.NewMockJob(ctrl)
 			tc.MockJob(ctx, mockJob)
 
-			nowFunc = tc.NowFunc
+			originalNowFunc := NowFunc
+			defer func() { NowFunc = originalNowFunc }()
+
+			NowFunc = tc.NowFunc
 			scheduler := &Scheduler{
 				DB:          db,
 				Queue:       "que.scheduler",

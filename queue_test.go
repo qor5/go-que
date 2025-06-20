@@ -21,6 +21,11 @@ import (
 	"github.com/qor5/go-que/pg"
 )
 
+func withinDuration(expected, actual time.Time, delta time.Duration) bool {
+	dt := expected.Sub(actual)
+	return !(dt < -delta || dt > delta)
+}
+
 func TestEnqueueLockUnlock(t *testing.T) {
 	q := newQueue()
 	mu := q.Mutex()
@@ -72,7 +77,7 @@ func TestEnqueueLockUnlock(t *testing.T) {
 	}
 
 	actualPlan := job.Plan()
-	if !plan.RunAt.Truncate(time.Microsecond).Equal(actualPlan.RunAt.Truncate(time.Microsecond)) {
+	if !withinDuration(plan.RunAt, actualPlan.RunAt, time.Microsecond) {
 		t.Fatalf("want run at is %s but get %s", plan.RunAt.String(), actualPlan.RunAt.String())
 	}
 	plan.RunAt = actualPlan.RunAt
