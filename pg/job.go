@@ -126,13 +126,13 @@ func (j *job) RetryAfter(ctx context.Context, interval time.Duration, cerr error
 	intervalSeconds := interval.Seconds()
 	var errMsg, errStack string
 	if cerr != nil {
+		errMsg = cerr.Error()
 		if _, ok := cerr.(interface {
 			StackTrace() errors.StackTrace
 		}); ok {
 			errStack = fmt.Sprintf("%+v", cerr)
 		} else {
 			// fallback
-			errMsg = cerr.Error()
 			errStack = que.Stack(4)
 		}
 	}
