@@ -108,7 +108,7 @@ func (j *job) Expire(ctx context.Context, cerr error) error {
 	var errMsg, errStack string
 	if cerr != nil {
 		errMsg = cerr.Error()
-		errStack = que.Stack(4)
+		errStack = getErrorStack(cerr)
 	}
 
 	_, err := j.exec(j.tx)(ctx, execSQL, errMsg, errStack, j.id)
@@ -127,14 +127,7 @@ func (j *job) RetryAfter(ctx context.Context, interval time.Duration, cerr error
 	var errMsg, errStack string
 	if cerr != nil {
 		errMsg = cerr.Error()
-		if _, ok := cerr.(interface {
-			StackTrace() errors.StackTrace
-		}); ok {
-			errStack = fmt.Sprintf("%+v", cerr)
-		} else {
-			// fallback
-			errStack = que.Stack(4)
-		}
+		errStack = getErrorStack(cerr)
 	}
 	_, err := j.exec(j.tx)(ctx, retryJob, intervalSeconds, errMsg, errStack, j.id)
 	return err
@@ -153,4 +146,16 @@ func (j *job) exec(tx *sql.Tx) func(context.Context, string, ...interface{}) (sq
 		return tx.ExecContext
 	}
 	return j.db.ExecContext
+}
+
+func getErrorStack(err error) string {
+	if err == nil {
+		return ""
+	}
+	if _, ok := err.(interface {
+		StackTrace() errors.StackTrace
+	}); ok {
+		return fmt.Sprintf("%+v", err)
+	}
+	return que.Stack(5)
 }
