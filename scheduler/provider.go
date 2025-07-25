@@ -4,7 +4,9 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
+	"strings"
 
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 )
 
@@ -28,6 +30,9 @@ type FileProvider struct {
 }
 
 func (fp *FileProvider) Provide() (Schedule, error) {
+	if strings.Contains(fp.Filename, "../") || strings.Contains(fp.Filename, "..\\") {
+		return nil, errors.Errorf("Invalid file path: %s", fp.Filename)
+	}
 	file, err := os.Open(fp.Filename)
 	if err != nil {
 		return nil, err
