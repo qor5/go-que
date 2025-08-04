@@ -92,6 +92,9 @@ func metricNow(now time.Time, result chan<- Latency, f func()) {
 }
 
 func (b *Benchmark) Configure(file string) {
+	if strings.Contains(file, "../") || strings.Contains(file, "..\\") {
+		log.Fatalln(fmt.Errorf("Invalid file path"))
+	}
 	in, err := ioutil.ReadFile(file)
 	if err != nil {
 		log.Fatalln(err)
