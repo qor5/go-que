@@ -1,6 +1,6 @@
 module github.com/qor5/go-que/bm
 
-go 1.13
+go 1.24
 
 replace github.com/qor5/go-que => ../
 
