@@ -110,7 +110,7 @@ func (sc *Scheduler) Perform(ctx context.Context, job que.Job) error {
 					log.Panic(sc.sprintf("derive plans of %q with err: %v", name, err))
 				}
 				if len(plans) == 0 {
-					log.Printf(sc.sprintf("derive zero plan of %q", name))
+					log.Print(sc.sprintf("derive zero plan of %q", name))
 					continue
 				}
 			}
