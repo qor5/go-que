@@ -1,6 +1,6 @@
 module github.com/qor5/go-que
 
-go 1.24
+go 1.25.8
 
 require (
 	github.com/golang/mock v1.4.3
