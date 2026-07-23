@@ -123,6 +123,14 @@ func (sc *Scheduler) Perform(ctx context.Context, job que.Job) error {
 		}
 
 		job.In(tx)
+		// Reset before we hand the job back to the worker: In(tx) rebinds the
+		// job's terminal ops to this tx, but the worker reuses the SAME job on
+		// the error/panic path (handleErr → RetryInPlan, context.Background()).
+		// Once this tx is committed/rolled back, a lingering binding makes that
+		// RetryInPlan run on a finished tx (sql.ErrTxDone) and silently drop the
+		// retry bookkeeping. defer covers all three return paths (the panic path
+		// runs this before the worker's recover).
+		defer job.In(nil)
 		err = job.Destroy(ctx)
 		if err != nil {
 			log.Panic(sc.sprintf("destroy old self with err: %v", err))

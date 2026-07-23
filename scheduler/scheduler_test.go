@@ -90,6 +90,7 @@ func TestSchedulerPerform(t *testing.T) {
 			MockJob: func(ctx context.Context, mj *mock.MockJob) {
 				mj.EXPECT().Plan().Return(que.Plan{Args: que.Args(mustParseTime("2020-02-16T19:11:45+08:00"))}).Times(1)
 				mj.EXPECT().In(gomock.Not(nil)).Times(1)
+				mj.EXPECT().In(gomock.Nil()).Times(1)
 				mj.EXPECT().Destroy(gomock.Eq(ctx)).Return(nil).Times(1)
 			},
 			MockQueue: func(ctx context.Context, mq *mock.MockQueue) {
@@ -128,6 +129,7 @@ func TestSchedulerPerform(t *testing.T) {
 			MockJob: func(ctx context.Context, mj *mock.MockJob) {
 				mj.EXPECT().Plan().Return(que.Plan{Args: que.Args(mustParseTime("2020-02-16T19:11:45+08:00"))}).Times(1)
 				mj.EXPECT().In(gomock.Not(nil)).Times(1)
+				mj.EXPECT().In(gomock.Nil()).Times(1)
 				mj.EXPECT().Destroy(gomock.Eq(ctx)).Return(nil).Times(1)
 			},
 			MockQueue: func(ctx context.Context, mq *mock.MockQueue) {
@@ -173,6 +175,7 @@ func TestSchedulerPerform(t *testing.T) {
 			MockJob: func(ctx context.Context, mj *mock.MockJob) {
 				mj.EXPECT().Plan().Return(que.Plan{Args: que.Args(mustParseTime("2020-02-16T19:11:45+08:00"), []string{"name.recovery.reparation"})}).Times(1)
 				mj.EXPECT().In(gomock.Not(nil)).Times(1)
+				mj.EXPECT().In(gomock.Nil()).Times(1)
 				mj.EXPECT().Destroy(gomock.Eq(ctx)).Return(nil).Times(1)
 			},
 			MockQueue: func(ctx context.Context, mq *mock.MockQueue) {
@@ -251,6 +254,7 @@ func TestSchedulerPerform(t *testing.T) {
 			MockJob: func(ctx context.Context, mj *mock.MockJob) {
 				mj.EXPECT().Plan().Return(que.Plan{Args: que.Args(mustParseTime("2020-02-16T19:11:45+08:00"), []string{"name.recovery.ignore"})}).Times(1)
 				mj.EXPECT().In(gomock.Not(nil)).Times(1)
+				mj.EXPECT().In(gomock.Nil()).Times(1)
 				mj.EXPECT().Destroy(gomock.Eq(ctx)).Return(nil).Times(1)
 			},
 			MockQueue: func(ctx context.Context, mq *mock.MockQueue) {
@@ -302,6 +306,7 @@ func TestSchedulerPerform(t *testing.T) {
 			MockJob: func(ctx context.Context, mj *mock.MockJob) {
 				mj.EXPECT().Plan().Return(que.Plan{Args: que.Args(mustParseTime("2020-02-16T19:11:45+08:00"), []string{"name.derive.zero"})}).Times(1)
 				mj.EXPECT().In(gomock.Not(nil)).Times(1)
+				mj.EXPECT().In(gomock.Nil()).Times(1)
 				mj.EXPECT().Destroy(gomock.Eq(ctx)).Return(nil).Times(1)
 			},
 			MockQueue: func(ctx context.Context, mq *mock.MockQueue) {
@@ -345,6 +350,7 @@ func TestSchedulerPerform(t *testing.T) {
 			MockJob: func(ctx context.Context, mj *mock.MockJob) {
 				mj.EXPECT().Plan().Return(que.Plan{Args: que.Args(mustParseTime("2020-02-16T19:11:45+08:00"), []string{"name.derive.two"})}).Times(1)
 				mj.EXPECT().In(gomock.Not(nil)).Times(1)
+				mj.EXPECT().In(gomock.Nil()).Times(1)
 				mj.EXPECT().Destroy(gomock.Eq(ctx)).Return(nil).Times(1)
 			},
 			MockQueue: func(ctx context.Context, mq *mock.MockQueue) {
