@@ -28,7 +28,7 @@ jobs:
           cache: true
 
       - name: Set up postgres
-        run: docker compose up -d
+        run: docker compose up -d --wait
 
       - name: Build
         run: go build -v ./...
