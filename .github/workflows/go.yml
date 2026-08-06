@@ -18,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v4
@@ -26,7 +28,7 @@ jobs:
           cache: true
 
       - name: Set up postgres
-        run: docker compose up -d
+        run: docker compose up -d --wait
 
       - name: Build
         run: go build -v ./...
