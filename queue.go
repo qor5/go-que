@@ -90,7 +90,8 @@ type Queue interface {
 //
 // A mutex survives its errors: after one, it drops its database connection,
 // and with it every lock it holds, and connects again on the next call. Jobs
-// it had handed out are not locked again by it until they are unlocked.
+// it had handed out are not locked again by it until they are unlocked, so
+// callers still unlock them as usual; that needs no connection.
 //
 // Its locks and helper functions live in its database session, so it does not
 // work through a pooler that hands each transaction a different server

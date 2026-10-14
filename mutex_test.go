@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -19,10 +21,55 @@ import (
 // faults makes the next statement containing a given text fail once, or
 // runs a statement on the same connection before it.
 type faults struct {
-	mu     sync.Mutex
-	next   string
-	before string
-	run    string
+	mu        sync.Mutex
+	next      string
+	before    string
+	run       string
+	breakRows string
+	down      bool
+}
+
+// unreachable makes new connections fail while it is set.
+func (f *faults) unreachable(down bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.down = down
+}
+
+func (f *faults) isDown() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.down
+}
+
+// breakRowsOf makes the rows of the next statement containing text fail after
+// the first row.
+func (f *faults) breakRowsOf(text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.breakRows = text
+}
+
+func (f *faults) breaksRows(query string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.breakRows != "" && strings.Contains(query, f.breakRows) {
+		f.breakRows = ""
+		return true
+	}
+	return false
+}
+
+type brokenRows struct {
+	driver.Rows
+	n int
+}
+
+func (r *brokenRows) Next(dest []driver.Value) error {
+	if r.n++; r.n > 1 {
+		return errInjected
+	}
+	return r.Rows.Next(dest)
 }
 
 func (f *faults) runBefore(text, stmt string) {
@@ -65,6 +112,9 @@ type faultyConnector struct {
 }
 
 func (c faultyConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if c.f.isDown() {
+		return nil, errInjected
+	}
 	cn, err := c.Connector.Connect(ctx)
 	if err != nil {
 		return nil, err
@@ -93,7 +143,11 @@ func (c faultyConn) QueryContext(ctx context.Context, query string, args []drive
 			return nil, err
 		}
 	}
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
+	if err == nil && c.f.breaksRows(query) {
+		rows = &brokenRows{Rows: rows}
+	}
+	return rows, err
 }
 
 func newFaultyQueue(t *testing.T) (que.Queue, *faults) {
@@ -236,6 +290,87 @@ func TestMutexDropsItsSessionWhenTheDatabaseSaysAJobIsNotLocked(t *testing.T) {
 	}
 	if err := mu.Unlock(context.Background(), []int64{a, b}); err != nil {
 		t.Fatalf("want the session dropped and b's unlock local but get %v", err)
+	}
+}
+
+func TestMutexUnlocksALostJobWhileTheDatabaseIsUnreachable(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	qs := randQueue()
+	a := enqueueNow(t, q, qs)
+	if got := lockIDs(t, mu, qs, 1); !equalIDs(got, []int64{a}) {
+		t.Fatalf("want %d but get %v", a, got)
+	}
+
+	f.failNext("WITH RECURSIVE jobs") // a's lock goes with the connection
+	if _, err := mu.Lock(context.Background(), qs, 1); !errors.Is(err, errInjected) {
+		t.Fatalf("want the injected error but get %v", err)
+	}
+	f.unreachable(true)
+	if err := mu.Unlock(context.Background(), []int64{a}); err != nil {
+		t.Fatalf("unlocking a lost job needs no connection, but get %v", err)
+	}
+	f.unreachable(false)
+	if got := lockIDs(t, mu, qs, 1); !equalIDs(got, []int64{a}) {
+		t.Fatalf("want %d lockable again but get %v", a, got)
+	}
+}
+
+func TestAFailedLockReturnsNoJobs(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	qs := randQueue()
+	a, b := enqueueNow(t, q, qs), enqueueNow(t, q, qs)
+
+	// a is done by the time Lock verifies it, and unlocking a fails
+	f.runBefore("WHERE done_at IS NULL\n  AND expired_at IS NULL\n  AND id IN", fmt.Sprintf("UPDATE goque_jobs SET done_at = now() WHERE id = %d", a))
+	f.failNext("pg_advisory_unlock(v.i)")
+	jobs, err := mu.Lock(context.Background(), qs, 2)
+	if !errors.Is(err, errInjected) || len(jobs) != 0 {
+		t.Fatalf("want no jobs and the injected error but get %d jobs, %v", len(jobs), err)
+	}
+	if got := lockIDs(t, mu, qs, 2); !equalIDs(got, []int64{b}) {
+		t.Fatalf("want %d (never handed out) but get %v", b, got)
+	}
+}
+
+func TestUnlockFailsWhenItsReplyBreaksOff(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	qs := randQueue()
+	a, b := enqueueNow(t, q, qs), enqueueNow(t, q, qs)
+	if got := lockIDs(t, mu, qs, 2); !equalIDs(got, []int64{a, b}) {
+		t.Fatalf("want %d and %d but get %v", a, b, got)
+	}
+
+	f.breakRowsOf("pg_advisory_unlock(v.i)")
+	if err := mu.Unlock(context.Background(), []int64{a, b}); !errors.Is(err, errInjected) {
+		t.Fatalf("want the broken reply reported but get %v", err)
+	}
+	if got := lockIDs(t, q.Mutex(), qs, 2); !equalIDs(got, []int64{a, b}) {
+		t.Fatalf("want both unlocked (the session is dropped) but get %v", got)
+	}
+}
+
+func TestUnlockingAnUnknownJobKeepsTheSessionAndUnlocksTheRest(t *testing.T) {
+	q := newQueue()
+	mu := q.Mutex()
+	qs := randQueue()
+	a, b := enqueueNow(t, q, qs), enqueueNow(t, q, qs)
+	if got := lockIDs(t, mu, qs, 2); !equalIDs(got, []int64{a, b}) {
+		t.Fatalf("want %d and %d but get %v", a, b, got)
+	}
+
+	err := mu.Unlock(context.Background(), []int64{a, math.MaxInt64})
+	var errQue *que.ErrQueue
+	if !errors.Is(err, que.ErrUnlockedJobs) || !errors.As(err, &errQue) {
+		t.Fatalf("want %v but get %v", que.ErrUnlockedJobs, err)
+	}
+	if got := lockIDs(t, q.Mutex(), qs, 2); !equalIDs(got, []int64{a}) {
+		t.Fatalf("want only %d (unlocked; b is still locked by the kept session) but get %v", a, got)
+	}
+	if err := mu.Unlock(context.Background(), []int64{b}); err != nil {
+		t.Fatal(err)
 	}
 }
 
