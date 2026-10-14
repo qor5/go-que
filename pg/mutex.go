@@ -33,6 +33,11 @@ type releaseConn func(error)
 
 func (m *mutex) grabConn(ctx context.Context) (*sql.Conn, releaseConn, error) {
 	m.mu.Lock()
+	return m.grabConnInMux(ctx)
+}
+
+// grabConnInMux is grabConn with m.mu already held; it unlocks m.mu on error.
+func (m *mutex) grabConnInMux(ctx context.Context) (*sql.Conn, releaseConn, error) {
 	var err error
 	if m.conn != nil {
 		m.active = time.Now()
@@ -320,13 +325,20 @@ func (m *mutex) idsAsString() string {
 }
 
 func (m *mutex) Unlock(ctx context.Context, ids []int64) (err error) {
-	if ids = m.forgetLost(ids); len(ids) == 0 {
+	if len(ids) == 0 {
 		return nil
 	}
 
+	m.mu.Lock()
+	// in the same critical section as connecting, so no id becomes lost in
+	// between
+	if ids = m.forgetLostInMux(ids); len(ids) == 0 {
+		m.mu.Unlock()
+		return nil
+	}
 	var conn *sql.Conn
 	var release releaseConn
-	conn, release, err = m.grabConn(ctx)
+	conn, release, err = m.grabConnInMux(ctx)
 	if err != nil {
 		return err
 	}
@@ -341,16 +353,16 @@ func (m *mutex) Unlock(ctx context.Context, ids []int64) (err error) {
 	return
 }
 
-// forgetLost drops the lost ones among ids: their locks went with an earlier
-// connection, so unlocking them needs none.
-func (m *mutex) forgetLost(ids []int64) []int64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.lost) == 0 {
-		return ids
-	}
+// forgetLostInMux drops duplicates, and the lost ones among ids: their locks
+// went with an earlier connection, so unlocking them needs none.
+func (m *mutex) forgetLostInMux(ids []int64) []int64 {
 	rest := make([]int64, 0, len(ids))
+	seen := make(map[int64]bool, len(ids))
 	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
 		if m.lost[id] {
 			delete(m.lost, id)
 		} else {
@@ -360,17 +372,14 @@ func (m *mutex) forgetLost(ids []int64) []int64 {
 	return rest
 }
 
-// unlockInMux unlocks the ids this mutex holds, forgets lost ones (they may
-// have become lost after forgetLost), and reports ids it never locked.
+// unlockInMux unlocks the ids this mutex holds, and reports ids it never
+// locked.
 func (m *mutex) unlockInMux(ctx context.Context, conn *sql.Conn, ids []int64) (notHeld bool, err error) {
 	held := make([]int64, 0, len(ids))
 	for _, id := range ids {
-		switch {
-		case m.ids[id]:
+		if m.ids[id] {
 			held = append(held, id)
-		case m.lost[id]:
-			delete(m.lost, id)
-		default:
+		} else {
 			notHeld = true
 		}
 	}

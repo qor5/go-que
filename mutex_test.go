@@ -347,8 +347,11 @@ func TestUnlockFailsWhenItsReplyBreaksOff(t *testing.T) {
 	if err := mu.Unlock(context.Background(), []int64{a, b}); !errors.Is(err, errInjected) {
 		t.Fatalf("want the broken reply reported but get %v", err)
 	}
-	if got := lockIDs(t, q.Mutex(), qs, 2); !equalIDs(got, []int64{a, b}) {
-		t.Fatalf("want both unlocked (the session is dropped) but get %v", got)
+	if got := lockIDs(t, mu, qs, 2); !equalIDs(got, []int64{a, b}) {
+		t.Fatalf("want both lockable again by the same mutex (the session is dropped, they are forgotten) but get %v", got)
+	}
+	if err := mu.Unlock(context.Background(), []int64{a, b}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -366,11 +369,65 @@ func TestUnlockingAnUnknownJobKeepsTheSessionAndUnlocksTheRest(t *testing.T) {
 	if !errors.Is(err, que.ErrUnlockedJobs) || !errors.As(err, &errQue) {
 		t.Fatalf("want %v but get %v", que.ErrUnlockedJobs, err)
 	}
-	if got := lockIDs(t, q.Mutex(), qs, 2); !equalIDs(got, []int64{a}) {
+	other := q.Mutex()
+	if got := lockIDs(t, other, qs, 2); !equalIDs(got, []int64{a}) {
 		t.Fatalf("want only %d (unlocked; b is still locked by the kept session) but get %v", a, got)
+	}
+	if err := other.Unlock(context.Background(), []int64{a}); err != nil {
+		t.Fatal(err)
 	}
 	if err := mu.Unlock(context.Background(), []int64{b}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUnlockingAJobTwiceInOneCallKeepsTheSession(t *testing.T) {
+	q := newQueue()
+	mu := q.Mutex()
+	qs := randQueue()
+	a, b := enqueueNow(t, q, qs), enqueueNow(t, q, qs)
+	if got := lockIDs(t, mu, qs, 2); !equalIDs(got, []int64{a, b}) {
+		t.Fatalf("want %d and %d but get %v", a, b, got)
+	}
+
+	if err := mu.Unlock(context.Background(), []int64{a, a}); err != nil {
+		t.Fatalf("want a unlocked once but get %v", err)
+	}
+	other := q.Mutex()
+	if got := lockIDs(t, other, qs, 2); !equalIDs(got, []int64{a}) {
+		t.Fatalf("want only %d (b is still locked by the kept session) but get %v", a, got)
+	}
+	if err := other.Unlock(context.Background(), []int64{a}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mu.Unlock(context.Background(), []int64{b}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLockFailsWhenItsReplyBreaksOff(t *testing.T) {
+	for name, text := range map[string]string{
+		"locking":   "WITH RECURSIVE jobs",
+		"verifying": "WHERE done_at IS NULL\n  AND expired_at IS NULL\n  AND id IN",
+	} {
+		t.Run(name, func(t *testing.T) {
+			q, f := newFaultyQueue(t)
+			mu := q.Mutex()
+			qs := randQueue()
+			a, b := enqueueNow(t, q, qs), enqueueNow(t, q, qs)
+
+			f.breakRowsOf(text)
+			jobs, err := mu.Lock(context.Background(), qs, 2)
+			if !errors.Is(err, errInjected) || len(jobs) != 0 {
+				t.Fatalf("want no jobs and the broken reply reported but get %d jobs, %v", len(jobs), err)
+			}
+			if got := lockIDs(t, mu, qs, 2); !equalIDs(got, []int64{a, b}) {
+				t.Fatalf("want %d and %d lockable again but get %v", a, b, got)
+			}
+			if err := mu.Unlock(context.Background(), []int64{a, b}); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
