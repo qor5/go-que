@@ -89,7 +89,9 @@ type Queue interface {
 // Mutex controls locks of performable jobs in database.
 //
 // A mutex survives its errors: after one, it drops its database connection,
-// and with it every lock it holds, and connects again on the next call. Jobs
+// and with it every lock it holds, and connects again on the next call. The
+// exception is unlocking ids it never locked, which only returns
+// ErrUnlockedJobs. Jobs
 // it had handed out are not locked again by it until they are unlocked, so
 // callers still unlock them as usual; that needs no connection.
 //

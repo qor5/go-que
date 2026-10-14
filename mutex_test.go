@@ -431,6 +431,15 @@ func TestLockFailsWhenItsReplyBreaksOff(t *testing.T) {
 	}
 }
 
+func TestUnlockingAnUnknownJobWithoutAConnectionDoesNotConnect(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	f.failNext("CREATE TYPE pg_temp.goque_remaining_result") // connecting would fail
+	if err := mu.Unlock(context.Background(), []int64{math.MaxInt64}); !errors.Is(err, que.ErrUnlockedJobs) {
+		t.Fatalf("want %v without connecting but get %v", que.ErrUnlockedJobs, err)
+	}
+}
+
 func TestAWorkerRebuiltOnTheSameMutexKeepsWorking(t *testing.T) {
 	q := newQueue()
 	mu := q.Mutex()

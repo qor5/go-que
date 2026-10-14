@@ -336,6 +336,10 @@ func (m *mutex) Unlock(ctx context.Context, ids []int64) (err error) {
 		m.mu.Unlock()
 		return nil
 	}
+	if m.conn == nil { // it holds nothing without a connection: all ids are unknown
+		m.mu.Unlock()
+		return &que.ErrQueue{Err: que.ErrUnlockedJobs}
+	}
 	var conn *sql.Conn
 	var release releaseConn
 	conn, release, err = m.grabConnInMux(ctx)
