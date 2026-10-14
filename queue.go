@@ -87,6 +87,15 @@ type Queue interface {
 }
 
 // Mutex controls locks of performable jobs in database.
+//
+// A mutex survives its errors: after one, it drops its database connection,
+// and with it every lock it holds, and connects again on the next call. Jobs
+// it had handed out are not locked again by it until they are unlocked.
+//
+// Its locks and helper functions live in its database session, so it does not
+// work through a pooler that hands each transaction a different server
+// connection (PgBouncer's transaction mode, say): connect directly, or pool by
+// session.
 type Mutex interface {
 	// Lock locks a set of jobs in database.
 	// These jobs unable to lock by other mutex until database connection break(closed)
@@ -94,9 +103,8 @@ type Mutex interface {
 	// Lock not guarantee get count of jobs.
 	Lock(ctx context.Context, queue string, count int) ([]Job, error)
 	// Unlock unlocks jobs by given ids.
-	// - ErrNotLockedJobsInLocal
-	//    When unlock id not in local map.
-	// - ErrNotLockedJobsInDB
-	//    When unlock ids not locked in database.
+	// - ErrUnlockedJobs
+	//    When some ids were never locked by this mutex (the others are unlocked),
+	//    or are not locked in database.
 	Unlock(ctx context.Context, ids []int64) error
 }

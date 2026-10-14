@@ -22,19 +22,21 @@ type mutex struct {
 	conn   *sql.Conn
 	active time.Time
 	cancel context.CancelFunc
-	ids    map[int64]bool
-	err    error
+	ids    map[int64]bool // locked on conn
+	// lost were locked on a connection since dropped: their locks are gone,
+	// but their callers still have them, so they are not locked again until
+	// unlocked.
+	lost map[int64]bool
 }
+
+// errNotHeld unlocks jobs this mutex never locked: a caller's mistake that
+// leaves the connection as it was, so it is the one error that keeps it.
+var errNotHeld = &que.ErrQueue{Err: que.ErrUnlockedJobs}
 
 type releaseConn func(error)
 
 func (m *mutex) grabConn(ctx context.Context) (*sql.Conn, releaseConn, error) {
 	m.mu.Lock()
-	if m.err != nil {
-		m.mu.Unlock()
-		return nil, nil, &que.ErrQueue{Err: que.ErrBadMutex}
-	}
-
 	var err error
 	if m.conn != nil {
 		m.active = time.Now()
@@ -47,6 +49,7 @@ func (m *mutex) grabConn(ctx context.Context) (*sql.Conn, releaseConn, error) {
 		err = setupConn(ctx, m.conn)
 		if err != nil {
 			m.closeConn(m.conn, false)
+			m.conn = nil
 			m.mu.Unlock()
 			return nil, nil, err
 		}
@@ -62,18 +65,22 @@ func (m *mutex) grabConn(ctx context.Context) (*sql.Conn, releaseConn, error) {
 
 func (m *mutex) unlockCondReleaseConn(err error) {
 	defer m.mu.Unlock()
-	if err == nil {
+	if err == nil || err == errNotHeld {
 		return
 	}
 
-	m.err = err
+	// the session is in doubt: drop it, and every lock with it; the next
+	// call connects again
 	m.cancel()
 	m.cancel = nil
 	if err != driver.ErrBadConn {
 		m.closeConn(m.conn, true)
 	}
 	m.conn = nil
-	m.ids = nil
+	for id := range m.ids {
+		m.lost[id] = true
+	}
+	m.ids = make(map[int64]bool)
 }
 
 var maxIdle = 10 * time.Second
@@ -102,9 +109,6 @@ func (m *mutex) tryCloseIdleConn() bool {
 	}
 	if m.active.Add(maxIdle).After(time.Now()) {
 		return false
-	}
-	if m.err != nil {
-		return true
 	}
 
 	m.cancel()
@@ -178,10 +182,16 @@ func (m *mutex) Lock(ctx context.Context, queue string, count int) (jobs []que.J
 	if err != nil {
 		return nil, err
 	}
+	var ids []int64
 	defer func() {
+		if err != nil {
+			// a failed Lock hands out no job; their locks go with the connection
+			for _, id := range ids {
+				delete(m.ids, id)
+			}
+		}
 		release(err)
 	}()
-	var ids []int64
 	jobs, ids, err = m.lockInMux(ctx, conn, queue, count)
 	if err != nil {
 		return jobs, err
@@ -229,7 +239,7 @@ func (m *mutex) lockInMux(ctx context.Context, conn *sql.Conn, queue string, cou
 			&locked, &remaining,
 		)
 		if err != nil {
-			return nil, nil, err
+			return nil, ids, err
 		}
 		if doneAt.Valid {
 			err = fmt.Errorf("get a job(%v) has done_at=%s", jb.id, doneAt.Time.String())
@@ -286,13 +296,17 @@ func inInt64Array(ids []int64) string {
 	return string(buf)
 }
 
+// idsAsString lists the jobs Lock must skip: the ones this mutex holds, and
+// the lost ones still with their callers.
 func (m *mutex) idsAsString() string {
-	if len(m.ids) > 0 {
-		b := make([]byte, 1, 1+len(m.ids)*2)
+	if len(m.ids)+len(m.lost) > 0 {
+		b := make([]byte, 1, 1+(len(m.ids)+len(m.lost))*2)
 		b[0] = '{'
-		for id := range m.ids {
-			b = strconv.AppendInt(b, id, 10)
-			b = append(b, ',')
+		for _, ids := range []map[int64]bool{m.ids, m.lost} {
+			for id := range ids {
+				b = strconv.AppendInt(b, id, 10)
+				b = append(b, ',')
+			}
 		}
 		b[len(b)-1] = '}'
 		return string(b)
@@ -318,17 +332,39 @@ func (m *mutex) Unlock(ctx context.Context, ids []int64) (err error) {
 	return
 }
 
-func (m *mutex) unlockInMux(ctx context.Context, conn *sql.Conn, ids []int64) (err error) {
-	var notExists []int64
+func (m *mutex) unlockInMux(ctx context.Context, conn *sql.Conn, ids []int64) error {
+	held := make([]int64, 0, len(ids))
+	var notHeld bool
 	for _, id := range ids {
-		if !m.ids[id] {
-			notExists = append(notExists, id)
+		switch {
+		case m.ids[id]:
+			held = append(held, id)
+		case m.lost[id]:
+			delete(m.lost, id) // its lock went with an earlier connection
+		default:
+			notHeld = true
 		}
 	}
-	if len(notExists) > 0 {
-		return &que.ErrQueue{Err: que.ErrUnlockedJobs}
+	if len(held) > 0 {
+		if err := m.unlockHeld(ctx, conn, held); err != nil {
+			return err
+		}
 	}
+	if notHeld {
+		return errNotHeld
+	}
+	return nil
+}
 
+func (m *mutex) unlockHeld(ctx context.Context, conn *sql.Conn, ids []int64) (err error) {
+	defer func() {
+		if err != nil {
+			// their callers are done with them; their locks go with the connection
+			for _, id := range ids {
+				delete(m.ids, id)
+			}
+		}
+	}()
 	var b strings.Builder
 	b.WriteString("SELECT pg_advisory_unlock(v.i) FROM (VALUES (")
 	b.WriteString(strconv.FormatInt(ids[0], 10))
