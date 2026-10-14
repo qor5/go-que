@@ -27,6 +27,32 @@ type faults struct {
 	run       string
 	breakRows string
 	down      bool
+	hangOn    string
+	hanging   chan struct{} // closed once a statement hangs
+	unhang    chan struct{} // closing it lets the statement go on
+}
+
+// hang makes the next statement containing text block, whatever its context,
+// until the returned func is called: a database that stops answering, with a
+// driver that does not watch the context there (lib/pq while connecting).
+func (f *faults) hang(text string) (hanging <-chan struct{}, unhang func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hangOn, f.hanging, f.unhang = text, make(chan struct{}), make(chan struct{})
+	return f.hanging, sync.OnceFunc(func() { close(f.unhang) })
+}
+
+func (f *faults) hangs(query string) {
+	f.mu.Lock()
+	if f.hangOn == "" || !strings.Contains(query, f.hangOn) {
+		f.mu.Unlock()
+		return
+	}
+	f.hangOn = ""
+	hanging, unhang := f.hanging, f.unhang
+	f.mu.Unlock()
+	close(hanging)
+	<-unhang
 }
 
 // unreachable makes new connections fail while it is set.
@@ -128,6 +154,7 @@ type faultyConn struct {
 }
 
 func (c faultyConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.f.hangs(query)
 	if c.f.fails(query) {
 		return nil, errInjected
 	}
@@ -135,6 +162,7 @@ func (c faultyConn) ExecContext(ctx context.Context, query string, args []driver
 }
 
 func (c faultyConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.f.hangs(query)
 	if c.f.fails(query) {
 		return nil, errInjected
 	}
@@ -437,6 +465,68 @@ func TestUnlockingAnUnknownJobWithoutAConnectionDoesNotConnect(t *testing.T) {
 	f.failNext("CREATE TYPE pg_temp.goque_remaining_result") // connecting would fail
 	if err := mu.Unlock(context.Background(), []int64{math.MaxInt64}); !errors.Is(err, que.ErrUnlockedJobs) {
 		t.Fatalf("want %v without connecting but get %v", que.ErrUnlockedJobs, err)
+	}
+}
+
+func TestUnlockingALostJobDoesNotWaitForAHangingReconnect(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	qs := randQueue()
+	a := enqueueNow(t, q, qs)
+	if got := lockIDs(t, mu, qs, 1); !equalIDs(got, []int64{a}) {
+		t.Fatalf("want %d but get %v", a, got)
+	}
+	f.failNext("WITH RECURSIVE jobs") // a's lock goes with the connection: a is lost
+	if _, err := mu.Lock(context.Background(), qs, 1); !errors.Is(err, errInjected) {
+		t.Fatalf("want the injected error but get %v", err)
+	}
+
+	hanging, unhang := f.hang("CREATE TYPE pg_temp.goque_remaining_result")
+	defer unhang()
+	locked := make(chan error, 1)
+	go func() {
+		_, err := mu.Lock(context.Background(), qs, 1) // reconnects, and hangs there
+		locked <- err
+	}()
+	<-hanging
+
+	unlocked := make(chan error, 1)
+	go func() { unlocked <- mu.Unlock(context.Background(), []int64{a}) }()
+	select {
+	case err := <-unlocked:
+		if err != nil {
+			t.Fatalf("want a's unlock local but get %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("unlocking a lost job waited for the hanging reconnect")
+	}
+	unhang()
+	if err := <-locked; err != nil {
+		t.Fatalf("want the Lock to go on once the database answers but get %v", err)
+	}
+}
+
+func TestDroppingASessionDoesNotWaitForTheDatabase(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	qs := randQueue()
+	enqueueNow(t, q, qs)
+
+	_, unhang := f.hang("drop function pg_temp") // a statement on the session being dropped would hang
+	defer unhang()
+	f.failNext("WITH RECURSIVE jobs")
+	failed := make(chan error, 1)
+	go func() {
+		_, err := mu.Lock(context.Background(), qs, 1)
+		failed <- err
+	}()
+	select {
+	case err := <-failed:
+		if !errors.Is(err, errInjected) {
+			t.Fatalf("want the injected error but get %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("dropping the session ran a statement on it and waited")
 	}
 }
 

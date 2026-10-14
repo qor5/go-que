@@ -33,34 +33,30 @@ type releaseConn func(error)
 
 func (m *mutex) grabConn(ctx context.Context) (*sql.Conn, releaseConn, error) {
 	m.mu.Lock()
-	return m.grabConnInMux(ctx)
-}
-
-// grabConnInMux is grabConn with m.mu already held; it unlocks m.mu on error.
-func (m *mutex) grabConnInMux(ctx context.Context) (*sql.Conn, releaseConn, error) {
-	var err error
-	if m.conn != nil {
-		m.active = time.Now()
-	} else {
-		m.conn, err = m.db.Conn(ctx)
+	if m.conn == nil {
+		// connect without holding m.mu: a database that does not answer
+		// (and a driver that ignores ctx while connecting) must not block
+		// the calls that need no connection, such as unlocking lost jobs
+		m.mu.Unlock()
+		conn, err := m.db.Conn(ctx)
 		if err != nil {
-			m.mu.Unlock()
 			return nil, nil, err
 		}
-		err = setupConn(ctx, m.conn)
-		if err != nil {
-			m.closeConn(m.conn, false)
-			m.conn = nil
-			m.mu.Unlock()
+		if err = setupConn(ctx, conn); err != nil {
+			m.closeConn(conn)
 			return nil, nil, err
 		}
-
-		var cctx context.Context
-		cctx, m.cancel = context.WithCancel(context.Background())
-		m.active = time.Now()
-		go m.closeIdleConn(cctx)
+		m.mu.Lock()
+		if m.conn != nil {
+			m.closeConn(conn) // another call connected meanwhile
+		} else {
+			m.conn = conn
+			var cctx context.Context
+			cctx, m.cancel = context.WithCancel(context.Background())
+			go m.closeIdleConn(cctx)
+		}
 	}
-
+	m.active = time.Now()
 	return m.conn, m.unlockCondReleaseConn, nil
 }
 
@@ -75,7 +71,7 @@ func (m *mutex) unlockCondReleaseConn(err error) {
 	m.cancel()
 	m.cancel = nil
 	if err != driver.ErrBadConn {
-		m.closeConn(m.conn, true)
+		m.closeConn(m.conn)
 	}
 	m.conn = nil
 	for id := range m.ids {
@@ -117,18 +113,13 @@ func (m *mutex) tryCloseIdleConn(ctx context.Context) bool {
 
 	m.cancel()
 	m.cancel = nil
-	m.closeConn(m.conn, true)
+	m.closeConn(m.conn)
 	m.conn = nil
 	return true
 }
 
 func setupConn(ctx context.Context, conn *sql.Conn) error {
 	_, err := conn.ExecContext(ctx, setupConnSQL)
-	return err
-}
-
-func cleanupConn(conn *sql.Conn) error {
-	_, err := conn.ExecContext(context.Background(), cleanupConnSQL)
 	return err
 }
 
@@ -329,26 +320,21 @@ func (m *mutex) Unlock(ctx context.Context, ids []int64) (err error) {
 		return nil
 	}
 
+	// one hold of m.mu from forgetting lost ids to unlocking held ones: a
+	// failure in between would make held ids lost, leaving them excluded
+	// for good and reported as never locked
 	m.mu.Lock()
-	// in the same critical section as connecting, so no id becomes lost in
-	// between
 	if ids = m.forgetLostInMux(ids); len(ids) == 0 {
 		m.mu.Unlock()
 		return nil
 	}
-	if m.conn == nil { // it holds nothing without a connection: all ids are unknown
-		m.mu.Unlock()
-		return &que.ErrQueue{Err: que.ErrUnlockedJobs}
-	}
-	var conn *sql.Conn
-	var release releaseConn
-	conn, release, err = m.grabConnInMux(ctx)
-	if err != nil {
-		return err
-	}
+	// Unlock never connects: without a connection the mutex holds nothing,
+	// so every id left is reported as never locked
+	m.active = time.Now()
+	conn := m.conn
 	var notHeld bool
 	defer func() {
-		release(err) // a failure drops the session; unknown ids alone do not
+		m.unlockCondReleaseConn(err) // a failure drops the session; unknown ids alone do not
 		if err == nil && notHeld {
 			err = &que.ErrQueue{Err: que.ErrUnlockedJobs}
 		}
@@ -441,10 +427,10 @@ func (m *mutex) unlockHeld(ctx context.Context, conn *sql.Conn, ids []int64) (er
 	return nil
 }
 
-func (m *mutex) closeConn(conn *sql.Conn, clean bool) {
-	if clean {
-		cleanupConn(conn)
-	}
+// closeConn closes the physical connection, which ends its session: its
+// advisory locks and pg_temp objects go with it, so nothing is cleaned up
+// first (a statement could hang on a database that stopped answering).
+func (m *mutex) closeConn(conn *sql.Conn) {
 	conn.Raw(func(driverConn interface{}) error {
 		return driver.ErrBadConn
 	})

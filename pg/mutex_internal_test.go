@@ -54,3 +54,43 @@ func TestAnIdleCloserOfADroppedConnectionLeavesTheMutexAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestAnIdleConnectionEndsItsSession: closing an idle mutex connection ends
+// its database session (nothing is left to clean up in it).
+func TestAnIdleConnectionEndsItsSession(t *testing.T) {
+	db, err := sql.Open("postgres", os.Getenv("QUE_DB_SOURCE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	q, err := NewWithOptions(Options{DB: db, DBMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu := q.Mutex().(*mutex)
+	if _, err := mu.Lock(context.Background(), "idle-session", 1); err != nil {
+		t.Fatal(err)
+	}
+	mu.mu.Lock()
+	conn := mu.conn
+	var pid int
+	err = conn.QueryRowContext(context.Background(), "SELECT pg_backend_pid()").Scan(&pid)
+	mu.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * maxIdle)
+	for {
+		var alive bool
+		if err := db.QueryRow("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1)", pid).Scan(&alive); err != nil {
+			t.Fatal(err)
+		}
+		if !alive {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session %d still alive after the idle connection was closed", pid)
+		}
+		time.Sleep(maxIdle / 4)
+	}
+}

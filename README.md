@@ -18,7 +18,7 @@ There are benefits of using Que to route jobs:
 
 A worker's mutex holds its job locks (PostgreSQL advisory locks) on a database session of its own. Connect directly, or through a pooler that pools by session: a pooler that hands each transaction a different server connection (PgBouncer's `pool_mode = transaction`, say) breaks the locks, and go-que does not work through it.
 
-When a mutex call fails (its connection breaks, a statement fails, the caller's context ends; unlocking ids it never locked is the exception, which only returns `ErrUnlockedJobs`), the mutex drops its session and the database releases all its locks, so other workers may lock and perform those jobs again: execution is at least once. The failing call returns its error and `Worker.Run` returns it once its jobs in flight finish; a new worker, even on the same mutex, connects again.
+When a mutex call fails (its connection breaks, a statement fails, the caller's context ends; unlocking ids it never locked is the exception, which only returns `ErrUnlockedJobs`), the mutex drops its session and the database releases all its locks, so other workers may lock and perform those jobs again: execution is at least once. The failing call returns its error and `Worker.Run` returns it once its jobs in flight finish; a new worker, even on the same mutex, connects again. Only `Lock` connects; with lib/pq, connecting ignores the context, so a `Lock` against a database that stopped answering waits for the TCP timeout (pgx honours the context), while unlocking jobs handed out before goes on without waiting.
 
 ## Install
 
