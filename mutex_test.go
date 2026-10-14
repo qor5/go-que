@@ -27,6 +27,7 @@ type faults struct {
 	run       string
 	breakRows string
 	down      bool
+	seen      map[string]int // statements run, by the texts registered with count
 	hangOn    string
 	hanging   chan struct{} // closed once a statement hangs
 	unhang    chan struct{} // closing it lets the statement go on
@@ -40,6 +41,32 @@ func (f *faults) hang(text string) (hanging <-chan struct{}, unhang func()) {
 	defer f.mu.Unlock()
 	f.hangOn, f.hanging, f.unhang = text, make(chan struct{}), make(chan struct{})
 	return f.hanging, sync.OnceFunc(func() { close(f.unhang) })
+}
+
+// count starts counting the statements that contain text.
+func (f *faults) count(text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.seen == nil {
+		f.seen = map[string]int{}
+	}
+	f.seen[text] = 0
+}
+
+func (f *faults) counted(text string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.seen[text]
+}
+
+func (f *faults) note(query string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for text := range f.seen {
+		if strings.Contains(query, text) {
+			f.seen[text]++
+		}
+	}
 }
 
 func (f *faults) hangs(query string) {
@@ -154,6 +181,7 @@ type faultyConn struct {
 }
 
 func (c faultyConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.f.note(query)
 	c.f.hangs(query)
 	if c.f.fails(query) {
 		return nil, errInjected
@@ -527,6 +555,34 @@ func TestDroppingASessionDoesNotWaitForTheDatabase(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("dropping the session ran a statement on it and waited")
+	}
+}
+
+func TestConcurrentLocksConnectOnce(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	qs := randQueue()
+	const setup = "CREATE TYPE pg_temp.goque_remaining_result"
+	f.count(setup)
+	hanging, unhang := f.hang(setup)
+	defer unhang()
+
+	const n = 5
+	errs := make(chan error, n)
+	go func() { _, err := mu.Lock(context.Background(), qs, 1); errs <- err }()
+	<-hanging // the first Lock is connecting
+	for range n - 1 {
+		go func() { _, err := mu.Lock(context.Background(), qs, 1); errs <- err }()
+	}
+	time.Sleep(100 * time.Millisecond) // let the others reach the mutex
+	unhang()
+	for range n {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := f.counted(setup); got != 1 {
+		t.Fatalf("want one connection set up for %d concurrent Locks but get %d", n, got)
 	}
 }
 

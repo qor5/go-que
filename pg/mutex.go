@@ -23,6 +23,9 @@ type mutex struct {
 	active time.Time
 	cancel context.CancelFunc
 	ids    map[int64]bool // locked on conn
+	// dialing is closed when the connecting call in flight is done; nil when
+	// none is
+	dialing chan struct{}
 	// lost were locked on a connection since dropped: their locks are gone,
 	// but their callers still have them, so they are not locked again until
 	// unlocked.
@@ -33,31 +36,53 @@ type releaseConn func(error)
 
 func (m *mutex) grabConn(ctx context.Context) (*sql.Conn, releaseConn, error) {
 	m.mu.Lock()
-	if m.conn == nil {
+	for m.conn == nil {
+		if dialing := m.dialing; dialing != nil {
+			// another call is connecting: wait for it rather than open a
+			// connection of our own
+			m.mu.Unlock()
+			select {
+			case <-dialing:
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
+			}
+			m.mu.Lock()
+			continue
+		}
 		// connect without holding m.mu: a database that does not answer
 		// (and a driver that ignores ctx while connecting) must not block
 		// the calls that need no connection, such as unlocking lost jobs
+		dialing := make(chan struct{})
+		m.dialing = dialing
 		m.mu.Unlock()
-		conn, err := m.db.Conn(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err = setupConn(ctx, conn); err != nil {
-			m.closeConn(conn)
-			return nil, nil, err
-		}
+		conn, err := m.connect(ctx)
 		m.mu.Lock()
-		if m.conn != nil {
-			m.closeConn(conn) // another call connected meanwhile
-		} else {
-			m.conn = conn
-			var cctx context.Context
-			cctx, m.cancel = context.WithCancel(context.Background())
-			go m.closeIdleConn(cctx)
+		m.dialing = nil
+		close(dialing)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, nil, err
 		}
+		m.conn = conn
+		var cctx context.Context
+		cctx, m.cancel = context.WithCancel(context.Background())
+		go m.closeIdleConn(cctx)
 	}
 	m.active = time.Now()
 	return m.conn, m.unlockCondReleaseConn, nil
+}
+
+// connect opens a connection of the mutex's own and sets it up.
+func (m *mutex) connect(ctx context.Context) (*sql.Conn, error) {
+	conn, err := m.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = setupConn(ctx, conn); err != nil {
+		m.closeConn(conn)
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (m *mutex) unlockCondReleaseConn(err error) {
