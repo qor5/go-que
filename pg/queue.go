@@ -204,5 +204,5 @@ func normalize(plan *que.Plan) error {
 }
 
 func (q *queue) Mutex() que.Mutex {
-	return &mutex{db: q.db, ids: make(map[int64]bool)}
+	return &mutex{db: q.db, ids: make(map[int64]bool), lost: make(map[int64]bool)}
 }

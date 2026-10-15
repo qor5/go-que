@@ -139,6 +139,10 @@ type Worker struct {
 // Run acutal starts goroutine to execute Perform method and locks jobs.
 // Run blocked current caller's goroutine and returns error when get unsolved error.
 // When Run() returned, any call to it get ErrWorkerStoped.
+//
+// Before an error returns, the jobs being performed finish. To go on, create a
+// new worker; it may use the same mutex, which connects again on its next call.
+// Back off between attempts: while the database is unreachable each one fails.
 func (w *Worker) Run() error {
 	if w.isStopped() {
 		return ErrWorkerStoped
