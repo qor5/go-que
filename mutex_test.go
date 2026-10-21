@@ -233,6 +233,12 @@ func (c faultyConn) QueryContext(ctx context.Context, query string, args []drive
 
 func newFaultyQueue(t *testing.T) (que.Queue, *faults) {
 	t.Helper()
+	q, _, f := newFaultyQueueAndDB(t)
+	return q, f
+}
+
+func newFaultyQueueAndDB(t *testing.T) (que.Queue, *sql.DB, *faults) {
+	t.Helper()
 	newQueue() // migrates the shared database
 	connector, err := pq.NewConnector(os.Getenv("QUE_DB_SOURCE"))
 	if err != nil {
@@ -245,7 +251,7 @@ func newFaultyQueue(t *testing.T) (que.Queue, *faults) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return q, f
+	return q, db, f
 }
 
 func enqueueNow(t *testing.T, q que.Queue, qs string) int64 {
@@ -659,7 +665,7 @@ func TestALockWaitingForAnotherCallsConnectionEndsWithItsContext(t *testing.T) {
 }
 
 func TestAPanicWhileConnectingDoesNotBlockLaterLocks(t *testing.T) {
-	q, f := newFaultyQueue(t)
+	q, db, f := newFaultyQueueAndDB(t)
 	mu := q.Mutex()
 	qs := randQueue()
 	a := enqueueNow(t, q, qs)
@@ -673,6 +679,9 @@ func TestAPanicWhileConnectingDoesNotBlockLaterLocks(t *testing.T) {
 		}()
 		_, _ = mu.Lock(context.Background(), qs, 1)
 	}()
+	if inUse := db.Stats().InUse; inUse != 0 {
+		t.Fatalf("want the connection the panic left closed but %d still in use", inUse)
+	}
 
 	locked := make(chan []int64, 1)
 	go func() { locked <- lockIDs(t, mu, qs, 1) }()

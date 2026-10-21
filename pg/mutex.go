@@ -93,10 +93,16 @@ func (m *mutex) connect(ctx context.Context) (*sql.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	set := false
+	defer func() {
+		if !set { // setup failed, panicked or exited the goroutine
+			m.closeConn(conn)
+		}
+	}()
 	if err = setupConn(ctx, conn); err != nil {
-		m.closeConn(conn)
 		return nil, err
 	}
+	set = true
 	return conn, nil
 }
 
