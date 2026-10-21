@@ -26,7 +26,7 @@ func TestAnIdleCloserOfADroppedConnectionLeavesTheMutexAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	q, err := NewWithOptions(Options{DB: db, DBMigrate: true})
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestAnIdleCloserOfADroppedConnectionLeavesTheMutexAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec("LOCK TABLE goque_jobs IN ACCESS EXCLUSIVE MODE"); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestAnIdleConnectionEndsItsSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	q, err := NewWithOptions(Options{DB: db, DBMigrate: true})
 	if err != nil {
 		t.Fatal(err)
