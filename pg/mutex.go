@@ -95,9 +95,10 @@ func (m *mutex) unlockCondReleaseConn(err error) {
 	// call connects again
 	m.cancel()
 	m.cancel = nil
-	if err != driver.ErrBadConn {
-		m.closeConn(m.conn)
-	}
+	// even after driver.ErrBadConn: database/sql has not closed the
+	// connection when Rows.Next reported it but Rows.Close succeeded (if it
+	// has, closing again is harmless)
+	m.closeConn(m.conn)
 	m.conn = nil
 	for id := range m.ids {
 		m.lost[id] = true

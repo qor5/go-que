@@ -26,6 +26,7 @@ type faults struct {
 	before    string
 	run       string
 	breakRows string
+	breakErr  error
 	down      bool
 	seen      map[string]int // statements run, by the texts registered with count
 	hangOn    string
@@ -97,30 +98,34 @@ func (f *faults) isDown() bool {
 
 // breakRowsOf makes the rows of the next statement containing text fail after
 // the first row.
-func (f *faults) breakRowsOf(text string) {
+func (f *faults) breakRowsOf(text string) { f.breakRowsWith(text, errInjected) }
+
+// breakRowsWith is breakRowsOf failing with err.
+func (f *faults) breakRowsWith(text string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.breakRows = text
+	f.breakRows, f.breakErr = text, err
 }
 
-func (f *faults) breaksRows(query string) bool {
+func (f *faults) breaksRows(query string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.breakRows != "" && strings.Contains(query, f.breakRows) {
 		f.breakRows = ""
-		return true
+		return f.breakErr
 	}
-	return false
+	return nil
 }
 
 type brokenRows struct {
 	driver.Rows
-	n int
+	err error
+	n   int
 }
 
 func (r *brokenRows) Next(dest []driver.Value) error {
 	if r.n++; r.n > 1 {
-		return errInjected
+		return r.err
 	}
 	return r.Rows.Next(dest)
 }
@@ -200,8 +205,10 @@ func (c faultyConn) QueryContext(ctx context.Context, query string, args []drive
 		}
 	}
 	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
-	if err == nil && c.f.breaksRows(query) {
-		rows = &brokenRows{Rows: rows}
+	if err == nil {
+		if berr := c.f.breaksRows(query); berr != nil {
+			rows = &brokenRows{Rows: rows, err: berr}
+		}
 	}
 	return rows, err
 }
@@ -462,9 +469,18 @@ func TestUnlockingAJobTwiceInOneCallKeepsTheSession(t *testing.T) {
 }
 
 func TestLockFailsWhenItsReplyBreaksOff(t *testing.T) {
-	for name, text := range map[string]string{
-		"locking":   "WITH RECURSIVE jobs",
-		"verifying": "WHERE done_at IS NULL\n  AND expired_at IS NULL\n  AND id IN",
+	const locking, verifying = "WITH RECURSIVE jobs", "WHERE done_at IS NULL\n  AND expired_at IS NULL\n  AND id IN"
+	for name, c := range map[string]struct {
+		text string
+		err  error
+	}{
+		"locking":   {locking, errInjected},
+		"verifying": {verifying, errInjected},
+		// database/sql leaves the connection open after driver.ErrBadConn
+		// from Rows.Next when Rows.Close succeeds: the mutex must still end
+		// the session, or its locks stay with it
+		"locking, bad connection":   {locking, driver.ErrBadConn},
+		"verifying, bad connection": {verifying, driver.ErrBadConn},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q, f := newFaultyQueue(t)
@@ -472,9 +488,9 @@ func TestLockFailsWhenItsReplyBreaksOff(t *testing.T) {
 			qs := randQueue()
 			a, b := enqueueNow(t, q, qs), enqueueNow(t, q, qs)
 
-			f.breakRowsOf(text)
+			f.breakRowsWith(c.text, c.err)
 			jobs, err := mu.Lock(context.Background(), qs, 2)
-			if !errors.Is(err, errInjected) || len(jobs) != 0 {
+			if !errors.Is(err, c.err) || len(jobs) != 0 {
 				t.Fatalf("want no jobs and the broken reply reported but get %d jobs, %v", len(jobs), err)
 			}
 			if got := lockIDs(t, mu, qs, 2); !equalIDs(got, []int64{a, b}) {
