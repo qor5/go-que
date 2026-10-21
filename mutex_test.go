@@ -620,6 +620,44 @@ func TestConcurrentLocksConnectOnce(t *testing.T) {
 	}
 }
 
+func TestALockWaitingForAnotherCallsConnectionEndsWithItsContext(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	qs := randQueue()
+	const setup = "CREATE TYPE pg_temp.goque_remaining_result"
+	f.count(setup)
+	hanging, unhang := f.hang(setup)
+	defer unhang()
+
+	connected := make(chan error, 1)
+	go func() { _, err := mu.Lock(context.Background(), qs, 1); connected <- err }()
+	<-hanging // the first Lock is connecting
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	waited := make(chan error, 1)
+	go func() { _, err := mu.Lock(ctx, qs, 1); waited <- err }()
+	select {
+	case err := <-waited:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("want %v but get %v", context.DeadlineExceeded, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a Lock waiting for another call's connection ignored its context")
+	}
+
+	unhang()
+	if err := <-connected; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mu.Lock(context.Background(), qs, 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.counted(setup); got != 1 {
+		t.Fatalf("want the connection kept but it was set up %d times", got)
+	}
+}
+
 func TestAPanicWhileConnectingDoesNotBlockLaterLocks(t *testing.T) {
 	q, f := newFaultyQueue(t)
 	mu := q.Mutex()

@@ -3,11 +3,14 @@ package pg
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
+
+	"github.com/qor5/go-que"
 )
 
 func TestMain(m *testing.M) {
@@ -92,5 +95,42 @@ func TestAnIdleConnectionEndsItsSession(t *testing.T) {
 			t.Fatalf("session %d still alive after the idle connection was closed", pid)
 		}
 		time.Sleep(maxIdle / 4)
+	}
+}
+
+// TestAConnectionHoldingLocksIsNeverIdle: the idle closer leaves a connection
+// alone while the mutex holds jobs on it, however long it goes unused.
+func TestAConnectionHoldingLocksIsNeverIdle(t *testing.T) {
+	db, err := sql.Open("postgres", os.Getenv("QUE_DB_SOURCE"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	q, err := NewWithOptions(Options{DB: db, DBMigrate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	qs := fmt.Sprintf("held-%d", time.Now().UnixNano())
+	if _, err := q.Enqueue(context.Background(), nil, que.Plan{Queue: qs, Args: que.Args(), RunAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	mu := q.Mutex()
+	jobs, err := mu.Lock(context.Background(), qs, 1)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("want one job but get %d, %v", len(jobs), err)
+	}
+	id := jobs[0].ID()
+
+	time.Sleep(3 * maxIdle) // the idle closer has run more than once
+	var held bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted
+		AND (classid::bigint << 32 | objid::bigint) = $1 AND objsubid = 1)`, id).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if !held {
+		t.Fatalf("job %d's lock went with an idle connection while the mutex held it", id)
+	}
+	if err := mu.Unlock(context.Background(), []int64{id}); err != nil {
+		t.Fatal(err)
 	}
 }
