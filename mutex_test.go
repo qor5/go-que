@@ -28,6 +28,7 @@ type faults struct {
 	breakRows string
 	breakErr  error
 	down      bool
+	panicOn   string
 	seen      map[string]int // statements run, by the texts registered with count
 	hangOn    string
 	hanging   chan struct{} // closed once a statement hangs
@@ -94,6 +95,22 @@ func (f *faults) isDown() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.down
+}
+
+// panicNext makes the next statement containing text panic with errInjected.
+func (f *faults) panicNext(text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.panicOn = text
+}
+
+func (f *faults) panics(query string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.panicOn != "" && strings.Contains(query, f.panicOn) {
+		f.panicOn = ""
+		panic(errInjected)
+	}
 }
 
 // breakRowsOf makes the rows of the next statement containing text fail after
@@ -187,6 +204,7 @@ type faultyConn struct {
 
 func (c faultyConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	c.f.note(query)
+	c.f.panics(query)
 	c.f.hangs(query)
 	if c.f.fails(query) {
 		return nil, errInjected
@@ -599,6 +617,37 @@ func TestConcurrentLocksConnectOnce(t *testing.T) {
 	}
 	if got := f.counted(setup); got != 1 {
 		t.Fatalf("want one connection set up for %d concurrent Locks but get %d", n, got)
+	}
+}
+
+func TestAPanicWhileConnectingDoesNotBlockLaterLocks(t *testing.T) {
+	q, f := newFaultyQueue(t)
+	mu := q.Mutex()
+	qs := randQueue()
+	a := enqueueNow(t, q, qs)
+
+	f.panicNext("CREATE TYPE pg_temp.goque_remaining_result") // setting up the connection
+	func() {
+		defer func() {
+			if r := recover(); r != errInjected {
+				t.Fatalf("want the connecting Lock to panic with the injected error but get %v", r)
+			}
+		}()
+		_, _ = mu.Lock(context.Background(), qs, 1)
+	}()
+
+	locked := make(chan []int64, 1)
+	go func() { locked <- lockIDs(t, mu, qs, 1) }()
+	select {
+	case got := <-locked:
+		if !equalIDs(got, []int64{a}) {
+			t.Fatalf("want %d but get %v", a, got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a Lock after a panic while connecting waited for that connection")
+	}
+	if err := mu.Unlock(context.Background(), []int64{a}); err != nil {
+		t.Fatal(err)
 	}
 }
 

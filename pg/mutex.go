@@ -49,16 +49,7 @@ func (m *mutex) grabConn(ctx context.Context) (*sql.Conn, releaseConn, error) {
 			m.mu.Lock()
 			continue
 		}
-		// connect without holding m.mu: a database that does not answer
-		// (and a driver that ignores ctx while connecting) must not block
-		// the calls that need no connection, such as unlocking lost jobs
-		dialing := make(chan struct{})
-		m.dialing = dialing
-		m.mu.Unlock()
-		conn, err := m.connect(ctx)
-		m.mu.Lock()
-		m.dialing = nil
-		close(dialing)
+		conn, err := m.dial(ctx)
 		if err != nil {
 			m.mu.Unlock()
 			return nil, nil, err
@@ -70,6 +61,30 @@ func (m *mutex) grabConn(ctx context.Context) (*sql.Conn, releaseConn, error) {
 	}
 	m.active = time.Now()
 	return m.conn, m.unlockCondReleaseConn, nil
+}
+
+// dial connects without holding m.mu, which it holds again when it returns:
+// a database that does not answer (and a driver that ignores ctx while
+// connecting) must not block the calls that need no connection, such as
+// unlocking lost jobs. The calls waiting for it go on even if connecting
+// panics.
+func (m *mutex) dial(ctx context.Context) (*sql.Conn, error) {
+	dialing := make(chan struct{})
+	m.dialing = dialing
+	m.mu.Unlock()
+	var returned bool
+	defer func() {
+		if !returned { // connect panicked or exited the goroutine: m.mu is not held
+			m.mu.Lock()
+			defer m.mu.Unlock()
+		}
+		m.dialing = nil
+		close(dialing)
+	}()
+	conn, err := m.connect(ctx)
+	returned = true
+	m.mu.Lock()
+	return conn, err
 }
 
 // connect opens a connection of the mutex's own and sets it up.
