@@ -34,7 +34,7 @@ func TestEnqueueLockUnlock(t *testing.T) {
 	type user struct {
 		Name string
 	}
-	runAt := time.Now()
+	runAt := due()
 	amap := map[string]int{"1": 1}
 	astruct := user{Name: "name"}
 	plan := que.Plan{
@@ -137,7 +137,7 @@ func TestLockSuccessAfterUnlock(t *testing.T) {
 	id, err := q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs,
 		Args:  []byte{},
-		RunAt: time.Now(),
+		RunAt: due(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +172,7 @@ func TestSameQueueDiffMutex(t *testing.T) {
 	id, err := q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs1,
 		Args:  que.Args(),
-		RunAt: time.Now(),
+		RunAt: due(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestSameQueueDiffMutex(t *testing.T) {
 	_, err = q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs1,
 		Args:  que.Args(),
-		RunAt: time.Now(),
+		RunAt: due(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +238,7 @@ func TestDiffQueue(t *testing.T) {
 	_, err := q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs1,
 		Args:  que.Args(),
-		RunAt: time.Now(),
+		RunAt: due(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +262,7 @@ func testResolve(t *testing.T, resolve func(jb que.Job) error) {
 	_, err := q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs,
 		Args:  que.Args(),
-		RunAt: time.Now(),
+		RunAt: due(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func testResolve(t *testing.T, resolve func(jb que.Job) error) {
 	_, err = q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs,
 		Args:  que.Args(),
-		RunAt: time.Now(),
+		RunAt: due(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +306,7 @@ func testResolve(t *testing.T, resolve func(jb que.Job) error) {
 
 	_, err = q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs,
-		RunAt: time.Now(),
+		RunAt: due(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +376,7 @@ func TestRetryAfterThenWaitUntilGet(t *testing.T) {
 	_, err := q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs,
 		Args:  que.Args(),
-		RunAt: time.Now(),
+		RunAt: due(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +432,7 @@ func TestRetryAfterThenWaitUntilGet(t *testing.T) {
 func enqueue(q que.Queue, qs string, uid *string, ulf que.UniqueLifecycle) error {
 	_, err := q.Enqueue(context.Background(), nil, que.Plan{
 		Queue:           qs,
-		RunAt:           time.Now(),
+		RunAt:           due(),
 		UniqueID:        uid,
 		UniqueLifecycle: ulf,
 	})
@@ -650,7 +650,7 @@ func TestParallelLock(t *testing.T) {
 		_, err := q.Enqueue(context.Background(), nil, que.Plan{
 			Queue: qs,
 			Args:  que.Args(),
-			RunAt: time.Now(),
+			RunAt: due(),
 		})
 		if err != nil {
 			t.Error(err)
@@ -727,6 +727,13 @@ func newQueue() que.Queue {
 		panic("already check supported driver in dbOnce")
 	}
 }
+
+// due is a run time already past by the database's clock too. A Plan's RunAt
+// is the caller's clock, while Lock compares it with the server's now(): the
+// two drift apart (by a millisecond or two between a Mac and Docker Desktop's
+// VM, by seconds after the Mac sleeps), and a job enqueued at time.Now() is
+// then not due yet when Lock looks a millisecond later.
+func due() time.Time { return time.Now().Add(-time.Hour) }
 
 func randQueue() string {
 	const bufLen = 10
