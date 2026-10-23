@@ -111,7 +111,7 @@ func TestAConnectionHoldingLocksIsNeverIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	qs := fmt.Sprintf("held-%d", time.Now().UnixNano())
-	if _, err := q.Enqueue(context.Background(), nil, que.Plan{Queue: qs, Args: que.Args(), RunAt: time.Now().Add(-time.Second)}); err != nil {
+	if _, err := q.Enqueue(context.Background(), nil, que.Plan{Queue: qs, Args: que.Args(), RunAt: time.Now().Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 	mu := q.Mutex()

@@ -259,7 +259,7 @@ func enqueueNow(t *testing.T, q que.Queue, qs string) int64 {
 	ids, err := q.Enqueue(context.Background(), nil, que.Plan{
 		Queue: qs,
 		Args:  que.Args(),
-		RunAt: time.Now().Add(-time.Second),
+		RunAt: time.Now().Add(-time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
