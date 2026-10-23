@@ -51,10 +51,31 @@ func (o Options) Copy() Options {
 	return o2
 }
 
+// Migrate creates the tables and indexes the queue needs, if they do not
+// exist. Instances may call it at the same time: it holds an advisory lock
+// while it migrates, since "if not exists" does not keep two sessions from
+// creating the same table at once on a fresh database.
 func Migrate(db *sql.DB) error {
-	_, err := db.Exec(migrateSchemaSQL)
-	return err
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	// the two-key form: job locks take the one-key form, a key space of its own
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock($1, $2)", migrateLockClass, migrateLockID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(migrateSchemaSQL); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
+
+// migrateLockClass and migrateLockID are the advisory lock Migrate holds.
+const (
+	migrateLockClass = 0x676f7175 // "gouq"
+	migrateLockID    = 1
+)
 
 type queue struct {
 	db *sql.DB
