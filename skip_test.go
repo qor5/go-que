@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
-	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/qor5/go-que"
@@ -24,7 +23,7 @@ func TestSkipConflict(t *testing.T) {
 	plan1 := que.Plan{
 		Queue:           qs,
 		Args:            que.Args("initial job"),
-		RunAt:           time.Now(),
+		RunAt:           due(),
 		UniqueID:        uniqueID,
 		UniqueLifecycle: que.Always,
 	}
@@ -47,7 +46,7 @@ func TestSkipConflict(t *testing.T) {
 	plan2 := que.Plan{
 		Queue:           qs,
 		Args:            que.Args("conflicting job"),
-		RunAt:           time.Now(),
+		RunAt:           due(),
 		UniqueID:        uniqueID, // Same unique ID, will cause conflict
 		UniqueLifecycle: que.Always,
 	}
@@ -72,7 +71,7 @@ func TestSkipConflict(t *testing.T) {
 		plan3 := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("non-conflicting job"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        anotherID,
 			UniqueLifecycle: que.Always,
 		}
@@ -110,7 +109,7 @@ func TestSkipConflict(t *testing.T) {
 		plan4 := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("yet another job"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        thirdID, // New unique ID, should succeed
 			UniqueLifecycle: que.Always,
 		}
@@ -118,7 +117,7 @@ func TestSkipConflict(t *testing.T) {
 		plan5 := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("another conflicting job"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        uniqueID, // Same unique ID, will cause conflict with plan1
 			UniqueLifecycle: que.Always,
 		}
@@ -126,7 +125,7 @@ func TestSkipConflict(t *testing.T) {
 		plan6 := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("one more job"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        anotherID, // Should not conflict since we're in a new transaction
 			UniqueLifecycle: que.Always,
 		}
@@ -166,7 +165,7 @@ func TestSkipConflict(t *testing.T) {
 		planDup1 := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("first duplicate job"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        duplicateID,
 			UniqueLifecycle: que.Always,
 		}
@@ -174,7 +173,7 @@ func TestSkipConflict(t *testing.T) {
 		planDup2 := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("second duplicate job"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        duplicateID, // Same unique ID as planDup1
 			UniqueLifecycle: que.Always,
 		}
@@ -184,7 +183,7 @@ func TestSkipConflict(t *testing.T) {
 		planRandom := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("non-duplicate job"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        randomID,
 			UniqueLifecycle: que.Always,
 		}
@@ -234,13 +233,13 @@ func TestSkipConflict(t *testing.T) {
 		// - Plans 1, 3 have the same ID (id2)
 		// - Plans 4, 6 have nil ID (should always be processed)
 		plans := []que.Plan{
-			{Queue: qs, Args: que.Args("first id1"), RunAt: time.Now(), UniqueID: id1, UniqueLifecycle: que.Always},
-			{Queue: qs, Args: que.Args("first id2"), RunAt: time.Now(), UniqueID: id2, UniqueLifecycle: que.Always},
-			{Queue: qs, Args: que.Args("second id1"), RunAt: time.Now(), UniqueID: id1, UniqueLifecycle: que.Lockable},
-			{Queue: qs, Args: que.Args("second id2"), RunAt: time.Now(), UniqueID: id2, UniqueLifecycle: que.Always},
-			{Queue: qs, Args: que.Args("first nil id"), RunAt: time.Now(), UniqueID: nil, UniqueLifecycle: que.Ignore},
-			{Queue: qs, Args: que.Args("third id1"), RunAt: time.Now(), UniqueID: id1, UniqueLifecycle: que.Done},
-			{Queue: qs, Args: que.Args("second nil id"), RunAt: time.Now(), UniqueID: nil, UniqueLifecycle: que.Ignore},
+			{Queue: qs, Args: que.Args("first id1"), RunAt: due(), UniqueID: id1, UniqueLifecycle: que.Always},
+			{Queue: qs, Args: que.Args("first id2"), RunAt: due(), UniqueID: id2, UniqueLifecycle: que.Always},
+			{Queue: qs, Args: que.Args("second id1"), RunAt: due(), UniqueID: id1, UniqueLifecycle: que.Lockable},
+			{Queue: qs, Args: que.Args("second id2"), RunAt: due(), UniqueID: id2, UniqueLifecycle: que.Always},
+			{Queue: qs, Args: que.Args("first nil id"), RunAt: due(), UniqueID: nil, UniqueLifecycle: que.Ignore},
+			{Queue: qs, Args: que.Args("third id1"), RunAt: due(), UniqueID: id1, UniqueLifecycle: que.Done},
+			{Queue: qs, Args: que.Args("second nil id"), RunAt: due(), UniqueID: nil, UniqueLifecycle: que.Ignore},
 		}
 
 		// With our new implementation, this should work with duplicates marked as skipped
@@ -301,7 +300,7 @@ func TestSkipConflict(t *testing.T) {
 		planQ1 := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("job in queue 1"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        sharedUniqueID,
 			UniqueLifecycle: que.Always,
 		}
@@ -310,7 +309,7 @@ func TestSkipConflict(t *testing.T) {
 		planQ2 := que.Plan{
 			Queue:           qs2,
 			Args:            que.Args("job in queue 2"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        sharedUniqueID, // Same uniqueID but different queue
 			UniqueLifecycle: que.Always,
 		}
@@ -348,7 +347,7 @@ func TestSkipConflict(t *testing.T) {
 		planQ1Dup := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("duplicate job in queue 1"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        sharedUniqueID,
 			UniqueLifecycle: que.Always,
 		}
@@ -356,7 +355,7 @@ func TestSkipConflict(t *testing.T) {
 		planQ2Dup := que.Plan{
 			Queue:           qs2,
 			Args:            que.Args("duplicate job in queue 2"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        sharedUniqueID,
 			UniqueLifecycle: que.Always,
 		}
@@ -369,7 +368,7 @@ func TestSkipConflict(t *testing.T) {
 		planQ1New := que.Plan{
 			Queue:           qs,
 			Args:            que.Args("new job in queue 1"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        anotherSharedID,
 			UniqueLifecycle: que.Always,
 		}
@@ -377,7 +376,7 @@ func TestSkipConflict(t *testing.T) {
 		planQ2New := que.Plan{
 			Queue:           qs2,
 			Args:            que.Args("new job in queue 2"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        anotherSharedID,
 			UniqueLifecycle: que.Always,
 		}
@@ -386,7 +385,7 @@ func TestSkipConflict(t *testing.T) {
 		planQ1NewDup := que.Plan{
 			Queue:           qs, // Same queue as planQ1New
 			Args:            que.Args("duplicate of new job in queue 1"),
-			RunAt:           time.Now(),
+			RunAt:           due(),
 			UniqueID:        anotherSharedID, // Same uniqueID as planQ1New
 			UniqueLifecycle: que.Always,
 		}
