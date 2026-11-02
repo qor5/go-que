@@ -65,11 +65,6 @@ $$
     LANGUAGE SQL;
 `
 
-var cleanupConnSQL = `
-drop function pg_temp.goque_lock_and_decrease_remaining(integer, goque_jobs);
-drop type pg_temp.goque_remaining_result;
-`
-
 var verifyJobsSQL = `
 SELECT id
 FROM goque_jobs
