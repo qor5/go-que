@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -142,6 +143,18 @@ type Worker struct {
 	stopping context.Context
 	stop     context.CancelFunc
 	workers  sync.WaitGroup
+	// late is the run's own unlock once it has taken jobs (guarded by mux).
+	// The first Stop that finds nothing left to unlock takes it up: it waits
+	// for it and returns its error, as it would have unlocked those jobs
+	// itself; any other Stop returns as before.
+	late *lateUnlock
+}
+
+type lateUnlock struct {
+	done     chan struct{} // closed once err or panicked is set
+	err      error
+	panicked any  // what the Unlock panicked with, if it did
+	adopted  bool // a Stop has taken it up (guarded by Worker.mux)
 }
 
 // Run acutal starts goroutine to execute Perform method and locks jobs.
@@ -177,7 +190,7 @@ func (w *Worker) lock() (err error) {
 		atomic.StoreInt32(&w.stopped, 1)
 		w.stop()
 		close(w.jobC)
-		if byStop || errors.Is(err, ErrWorkerStoped) {
+		if byStop {
 			// Stop waits for the jobs being performed and unlocks them;
 			// unlock once more after them, for what a Stop that timed out,
 			// or that returned while a Lock still ran, left locked
@@ -216,12 +229,62 @@ func (w *Worker) lock() (err error) {
 
 // unlockAfterPerform unlocks the jobs the run has processed once every job
 // taken from jobC is over. Only the run locks jobs and jobC is closed, so no
-// job can be locked after this.
+// job can be locked after this. A Stop may take up its result (see late).
 func (w *Worker) unlockAfterPerform() {
 	w.workers.Wait()
-	// its error is dropped: a failure drops the mutex's session, and the
-	// locks with it, as any failing Unlock does
-	_ = w.unlockProcessed()
+	w.mux.Lock()
+	processed := w.processed
+	if len(processed) == 0 {
+		w.mux.Unlock()
+		return
+	}
+	w.processed = make([]int64, 0, cap(processed))
+	late := &lateUnlock{done: make(chan struct{})}
+	w.late = late
+	w.mux.Unlock()
+	defer close(late.done)
+	defer func() {
+		// this goroutine is the worker's, where a panic would end the
+		// process: the Stop that takes this up panics with it instead, in
+		// its caller's goroutine, as when it did the Unlock itself
+		if e := recover(); e != nil {
+			late.panicked = e
+			log.Printf("que: unlock of jobs %v panicked: %v\n%s", processed, e, debug.Stack())
+		}
+	}()
+	late.err = w.mutex.Unlock(context.Background(), processed)
+	if late.err != nil {
+		log.Printf("que: unlock of jobs %v: %v", processed, late.err)
+	}
+}
+
+// unlockForStop unlocks the processed jobs for Stop and returns the result.
+// When the run's own unlock has already taken them and no Stop has taken it
+// up yet, this Stop waits for it and returns its result instead, as it
+// would have done that Unlock itself.
+func (w *Worker) unlockForStop() error {
+	w.mux.Lock()
+	processed := w.processed
+	if len(processed) > 0 {
+		w.processed = make([]int64, 0, cap(processed))
+	}
+	late := w.late
+	adopt := len(processed) == 0 && late != nil && !late.adopted
+	if adopt {
+		late.adopted = true
+	}
+	w.mux.Unlock()
+	if len(processed) > 0 {
+		return w.mutex.Unlock(context.Background(), processed)
+	}
+	if adopt {
+		<-late.done
+		if late.panicked != nil {
+			panic(late.panicked)
+		}
+		return late.err
+	}
+	return nil
 }
 
 func (w *Worker) work() {
@@ -298,12 +361,16 @@ func (w *Worker) isStopped() bool {
 
 // Stop stops worker execution.
 // It blocks until ctx.Done() or all processing jobs done. It does not cancel
-// PerformContext. Jobs it leaves locked (ctx ended first, or a Lock was still
+// PerformContext. Jobs taken but not yet being performed (waiting for the
+// perform rate, or buffered) are not performed; they are unlocked for other
+// workers. Jobs it leaves locked (ctx ended first, or a Lock was still
 // running) are unlocked by the run once their Perform is over, which may call
-// the mutex's Unlock after Stop and Run have returned; that Unlock's error is
-// dropped, and like any failing Unlock it drops the mutex's session, with the
-// locks of anyone else using that mutex (it fails only when the connection
-// is already broken, and those locks with it).
+// the mutex's Unlock after Stop and Run have returned; the next Stop that
+// finds nothing else to unlock waits for that Unlock and returns its error
+// (which is also logged, as is a panic). Like any failing Unlock it drops the
+// mutex's session, with the locks of anyone else using that mutex (it fails
+// when its statement fails, usually because the connection is broken and
+// those locks are gone already).
 func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
 	if w.stop != nil { // nil on a Worker NewWorker did not make
@@ -324,5 +391,5 @@ wait:
 		}
 	}
 
-	return w.unlockProcessed()
+	return w.unlockForStop()
 }

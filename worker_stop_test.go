@@ -348,7 +348,7 @@ func TestRunReturnsAtOnceWhenAStoppedRunsLockFails(t *testing.T) {
 	<-locking // the next Lock is running
 	stopped := make(chan error, 1)
 	go func() { stopped <- w.Stop(context.Background()) }()
-	time.Sleep(200 * time.Millisecond) // Stop has marked the worker stopped
+	time.Sleep(500 * time.Millisecond) // Stop has marked the worker stopped
 	close(stopping)
 	select {
 	case err := <-ran:
@@ -476,5 +476,272 @@ func TestStopOnAZeroWorker(t *testing.T) {
 	defer cancel()
 	if err := w.Stop(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Stop reports the Unlock of the jobs it waited for, as on master: when a
+// Perform ends while Stop waits, Stop still does that Unlock itself (the
+// run's own unlock only handles what Stop left behind), so it returns only
+// once the Unlock is over, with its error.
+func TestStopReturnsTheUnlockOfTheJobsItWaitedFor(t *testing.T) {
+	performing, finish := make(chan struct{}), make(chan struct{})
+	unlockErr := errors.New("unlock failed")
+	mu := &failingUnlockMutex{scriptMutex: scriptMutex{lock: func(call int) ([]que.Job, error) {
+		if call == 1 {
+			return []que.Job{fakeJob(7)}, nil
+		}
+		return nil, nil
+	}}, err: unlockErr}
+	w, err := que.NewWorker(que.WorkerOptions{
+		Queue:            "q",
+		Mutex:            mu,
+		MaxLockPerSecond: 100,
+		Perform: func(context.Context, que.Job) error {
+			close(performing)
+			<-finish
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = w.Run() }()
+	<-performing
+	stopped := make(chan error, 1)
+	go func() { stopped <- w.Stop(context.Background()) }()
+	time.Sleep(100 * time.Millisecond) // Stop waits for the Perform
+	close(finish)                      // well before Stop's next tick
+	if err := <-stopped; !errors.Is(err, unlockErr) {
+		t.Fatalf("want Stop to return its Unlock's error but get %v", err)
+	}
+}
+
+// failingUnlockMutex fails every Unlock with err, after recording it.
+type failingUnlockMutex struct {
+	scriptMutex
+	err error
+}
+
+func (m *failingUnlockMutex) Unlock(ctx context.Context, ids []int64) error {
+	_ = m.scriptMutex.Unlock(ctx, ids)
+	return m.err
+}
+
+// newStoppableWorker runs a worker on mu whose first Lock hands out job 7
+// and whose Perform of it lasts until finish is closed.
+func newStoppableWorker(t *testing.T, mu que.Mutex) (w *que.Worker, performing, finish chan struct{}) {
+	t.Helper()
+	performing, finish = make(chan struct{}), make(chan struct{})
+	w, err := que.NewWorker(que.WorkerOptions{
+		Queue:            "q",
+		Mutex:            mu,
+		MaxLockPerSecond: 100,
+		Perform: func(context.Context, que.Job) error {
+			close(performing)
+			<-finish
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = w.Run() }()
+	<-performing
+	return w, performing, finish
+}
+
+func job7First(call int) ([]que.Job, error) {
+	if call == 1 {
+		return []que.Job{fakeJob(7)}, nil
+	}
+	return nil, nil
+}
+
+// A Stop called after an earlier one timed out reports the Unlock of the job
+// it waited for, as before #20.
+func TestAStopAfterOneThatTimedOutReportsTheUnlock(t *testing.T) {
+	unlockErr := errors.New("unlock failed")
+	mu := &failingUnlockMutex{scriptMutex: scriptMutex{lock: job7First}, err: unlockErr}
+	w, _, finish := newStoppableWorker(t, mu)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := w.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want the first Stop to time out but get %v", err)
+	}
+	stopped := make(chan error, 1)
+	go func() { stopped <- w.Stop(context.Background()) }()
+	time.Sleep(50 * time.Millisecond)
+	close(finish)
+	if err := <-stopped; !errors.Is(err, unlockErr) {
+		t.Fatalf("want the second Stop to return its Unlock's error but get %v", err)
+	}
+}
+
+// Of two concurrent Stops, the one that waits for the job reports its Unlock.
+func TestConcurrentStopsReportTheUnlock(t *testing.T) {
+	unlockErr := errors.New("unlock failed")
+	mu := &failingUnlockMutex{scriptMutex: scriptMutex{lock: job7First}, err: unlockErr}
+	w, _, finish := newStoppableWorker(t, mu)
+	stopped := make(chan error, 1)
+	go func() { stopped <- w.Stop(context.Background()) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Stop(ctx)
+	close(finish)
+	if err := <-stopped; !errors.Is(err, unlockErr) {
+		t.Fatalf("want the waiting Stop to return its Unlock's error but get %v", err)
+	}
+}
+
+// blockingUnlockMutex holds every Unlock until gate is closed.
+type blockingUnlockMutex struct {
+	scriptMutex
+	gate chan struct{}
+}
+
+func (m *blockingUnlockMutex) Unlock(ctx context.Context, ids []int64) error {
+	<-m.gate
+	return m.scriptMutex.Unlock(ctx, ids)
+}
+
+// A Stop returns nil only once the jobs it waited for are unlocked, even when
+// the run started that Unlock.
+func TestAStopReturnsOnlyOnceTheUnlockIsOver(t *testing.T) {
+	mu := &blockingUnlockMutex{scriptMutex: scriptMutex{lock: job7First}, gate: make(chan struct{})}
+	w, _, finish := newStoppableWorker(t, mu)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Stop(ctx)
+	close(finish) // the run's own unlock starts and blocks
+	stopped := make(chan error, 1)
+	go func() { stopped <- w.Stop(context.Background()) }()
+	select {
+	case err := <-stopped:
+		close(mu.gate)
+		t.Fatalf("Stop returned %v while the Unlock of job 7 still ran", err)
+	case <-time.After(1200 * time.Millisecond): // past Stop's tick
+	}
+	close(mu.gate)
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
+	}
+	mu.waitUnlocked(t, 7)
+}
+
+// A Mutex returning ErrWorkerStoped from Lock ends the run like any error:
+// Run returns once the Perform is over, and the job is unlocked.
+func TestAMutexReturningErrWorkerStopedEndsTheRunLikeAnError(t *testing.T) {
+	performing, finish := make(chan struct{}), make(chan struct{})
+	mu := &scriptMutex{lock: func(call int) ([]que.Job, error) {
+		if call == 1 {
+			return []que.Job{fakeJob(7)}, nil
+		}
+		<-performing
+		return nil, que.ErrWorkerStoped
+	}}
+	w, err := que.NewWorker(que.WorkerOptions{
+		Queue:                     "q",
+		Mutex:                     mu,
+		MaxLockPerSecond:          100,
+		MaxConcurrentPerformCount: 2,
+		Perform: func(context.Context, que.Job) error {
+			close(performing)
+			<-finish
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan error, 1)
+	go func() { ran <- w.Run() }()
+	select {
+	case err := <-ran:
+		close(finish)
+		t.Fatalf("Run returned %v while the Perform still ran", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(finish)
+	<-ran
+	mu.waitUnlocked(t, 7)
+}
+
+// gateUnlockMutex holds every Unlock until gate is closed; unlocking is
+// closed when the first one starts.
+type gateUnlockMutex struct {
+	scriptMutex
+	once      sync.Once
+	unlocking chan struct{}
+	gate      chan struct{}
+}
+
+func (m *gateUnlockMutex) Unlock(ctx context.Context, ids []int64) error {
+	m.once.Do(func() { close(m.unlocking) })
+	<-m.gate
+	return m.scriptMutex.Unlock(ctx, ids)
+}
+
+// While one Stop's Unlock (or the run's, taken up by that Stop) hangs on a
+// database that stopped answering, another Stop with a deadline returns
+// nil at its next tick, as before #20: only one Stop waits for that Unlock.
+func TestAStopDoesNotWaitForAnotherStopsUnlock(t *testing.T) {
+	mu := &gateUnlockMutex{scriptMutex: scriptMutex{lock: job7First}, unlocking: make(chan struct{}), gate: make(chan struct{})}
+	w, _, finish := newStoppableWorker(t, mu)
+	first := make(chan error, 1)
+	go func() { first <- w.Stop(context.Background()) }()
+	time.Sleep(100 * time.Millisecond)
+	close(finish)
+	<-mu.unlocking                     // the Unlock of job 7 hangs
+	time.Sleep(600 * time.Millisecond) // past the first Stop's tick: it waits for that Unlock
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	second := make(chan error, 1)
+	go func() { second <- w.Stop(ctx) }()
+	release := sync.OnceFunc(func() { close(mu.gate) })
+	defer release()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("want the second Stop to return nil but get %v", err)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("the second Stop waits for the first one's Unlock")
+	}
+	select {
+	case err := <-first:
+		t.Fatalf("the first Stop returned %v while its Unlock still ran", err)
+	default:
+	}
+	release()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	mu.waitUnlocked(t, 7)
+}
+
+// panickingUnlockMutex panics in every Unlock.
+type panickingUnlockMutex struct{ scriptMutex }
+
+func (m *panickingUnlockMutex) Unlock(context.Context, []int64) error { panic("unlock boom") }
+
+// A panic in the run's own Unlock, which runs in a goroutine of the worker's,
+// does not crash the process: the Stop that takes it up panics with it in
+// its caller's goroutine, who can recover it, as before #20 when that Stop
+// did the Unlock itself.
+func TestAPanicInTheRunsUnlockReachesTheStopsCaller(t *testing.T) {
+	mu := &panickingUnlockMutex{scriptMutex{lock: job7First}}
+	w, _, finish := newStoppableWorker(t, mu)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Stop(ctx)
+	close(finish) // the run's own Unlock panics, if there is one
+	time.Sleep(100 * time.Millisecond)
+	recovered := func() (e any) {
+		defer func() { e = recover() }()
+		_ = w.Stop(context.Background())
+		return nil
+	}()
+	if recovered != "unlock boom" {
+		t.Fatalf("want the Stop's caller to recover the Unlock's panic but get %v", recovered)
 	}
 }
