@@ -179,7 +179,10 @@ func StartWorker(ctx context.Context, workerOptions que.WorkerOptions, options .
 
 			tracked.locked.Store(false)
 			err := currentWorker.Run()
-			if errors.Is(err, que.ErrWorkerStoped) {
+			// Stop cancels workerCtx before stopping the worker, so this tells
+			// a Stop from a failure; Run's error does not: a Mutex may return
+			// que.ErrWorkerStoped too
+			if workerCtx.Err() != nil {
 				return nil
 			}
 			lastRunErr = err

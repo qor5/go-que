@@ -3,6 +3,7 @@ package supervisor_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -220,4 +221,43 @@ func TestStartWorker_OnlyAWorkerThatLockedStartsTheBackOffOver(t *testing.T) {
 	require.Eventually(t, func() bool { next, _ := spy.counts(); return next >= 5 }, 5*time.Second, time.Millisecond)
 	_, reset := spy.counts()
 	require.Equal(t, 1, reset, "only the worker that locked starts the backoff over")
+}
+
+// stopErrMutex fails its first Lock with que.ErrWorkerStoped and counts Locks.
+type stopErrMutex struct{ locks atomic.Int32 }
+
+func (m *stopErrMutex) Lock(_ context.Context, _ string, _ int) ([]que.Job, error) {
+	if m.locks.Add(1) == 1 {
+		return nil, que.ErrWorkerStoped
+	}
+	return nil, nil
+}
+func (m *stopErrMutex) Unlock(_ context.Context, _ []int64) error { return nil }
+
+// A Mutex returning que.ErrWorkerStoped is a failure like any other: only
+// the controller's Stop ends supervision.
+func TestStartWorker_ErrWorkerStopedFromTheMutexIsAFailure(t *testing.T) {
+	mu := &stopErrMutex{}
+	ctrl, err := supervisor.StartWorker(context.Background(), que.WorkerOptions{
+		Queue:                     "test-queue",
+		Mutex:                     mu,
+		Perform:                   noopPerform,
+		MaxLockPerSecond:          100,
+		MaxPerformPerSecond:       100,
+		MaxConcurrentPerformCount: 1,
+	}, supervisor.WithReconnectBackOff(backoff.NewConstantBackOff(10*time.Millisecond)))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = ctrl.Stop(ctx)
+	})
+
+	require.Eventually(t, func() bool { return mu.locks.Load() >= 2 }, 5*time.Second, 10*time.Millisecond,
+		"the worker must be recreated after its mutex returned que.ErrWorkerStoped")
+	select {
+	case <-ctrl.Done():
+		t.Fatalf("supervision ended without Stop: Err() = %v", ctrl.Err())
+	default:
+	}
 }
