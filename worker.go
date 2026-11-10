@@ -7,7 +7,6 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -53,6 +52,7 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		jobC:                      make(chan Job, count),
 		performLimiter:            newRateLimiter(opts.MaxPerformPerSecond),
 		processed:                 make([]int64, 0, count),
+		done:                      make(chan struct{}),
 	}, nil
 }
 
@@ -134,6 +134,12 @@ type Worker struct {
 	processed []int64
 
 	stopped int32
+	running int32
+	workers sync.WaitGroup
+	// done is closed once Run has unlocked every job it locked; doneErr is
+	// what that unlock returned when Stop ended the run.
+	done    chan struct{}
+	doneErr error
 }
 
 // Run acutal starts goroutine to execute Perform method and locks jobs.
@@ -147,20 +153,32 @@ func (w *Worker) Run() error {
 	if w.isStopped() {
 		return ErrWorkerStoped
 	}
+	atomic.StoreInt32(&w.running, 1)
 
 	for i := 0; i < w.maxConcurrentPerformCount; i++ {
-		go w.work()
+		w.workers.Add(1)
+		go func() {
+			defer w.workers.Done()
+			w.work()
+		}()
 	}
 	return w.lock()
 }
 
 func (w *Worker) lock() (err error) {
+	// However the run ends, every job it locked is unlocked once its Perform
+	// is over, even if Stop gave up waiting: only this goroutine locks jobs,
+	// so none can be locked after this.
 	defer func() {
-		if !w.isStopped() {
-			w.Stop(context.Background())
+		atomic.StoreInt32(&w.stopped, 1)
+		close(w.jobC)
+		w.workers.Wait() // performing jobs finish; buffered ones are skipped
+		uerr := w.unlockProcessed()
+		if errors.Is(err, ErrWorkerStoped) {
+			w.doneErr = uerr
 		}
+		close(w.done)
 	}()
-	defer close(w.jobC)
 	var jobs []Job
 	for {
 		w.lockLimiter.Wait(context.Background())
@@ -256,22 +274,18 @@ func (w *Worker) isStopped() bool {
 
 // Stop stops worker execution.
 // It blocks until ctx.Done() or all processing jobs done.
+// If ctx ends first, the jobs still being performed are unlocked once they
+// are over, so other workers can take them up (a retry, say).
 func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
-
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-wait:
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if atomic.LoadInt32(&w.ongoing) == 0 {
-				break wait
-			}
-		}
+	if atomic.LoadInt32(&w.running) == 0 {
+		return nil // Run never started, or will return at once
 	}
-
-	return w.unlockProcessed()
+	select {
+	case <-w.done:
+		return w.doneErr
+	case <-ctx.Done():
+		// Run still unlocks the jobs once their Perform is over
+		return ctx.Err()
+	}
 }
