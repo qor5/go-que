@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/qor5/go-que"
 	"github.com/qor5/go-que/pg"
 )
@@ -701,7 +701,7 @@ func newQueue() que.Queue {
 		_driver = os.Getenv("QUE_DB_DRIVER")
 		source := os.Getenv("QUE_DB_SOURCE")
 		switch _driver {
-		case "postgres":
+		case "pgx":
 			var err error
 			_db, err = sql.Open(_driver, source)
 			if err != nil {
@@ -717,7 +717,7 @@ func newQueue() que.Queue {
 	})
 
 	switch _driver {
-	case "postgres":
+	case "pgx":
 		q, err := pg.New(_db)
 		if err != nil {
 			panic(err)

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/qor5/go-que/pg"
 )
@@ -18,7 +18,7 @@ import (
 // exists" does not keep two sessions from creating the same table at once.
 func TestMigrateConcurrentlyOnAFreshDatabase(t *testing.T) {
 	source := os.Getenv("QUE_DB_SOURCE")
-	admin, err := sql.Open("postgres", source)
+	admin, err := sql.Open("pgx", source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestMigrateConcurrentlyOnAFreshDatabase(t *testing.T) {
 		v := u.Query()
 		v.Set("search_path", schema)
 		u.RawQuery = v.Encode()
-		db, err := sql.Open("postgres", u.String())
+		db, err := sql.Open("pgx", u.String())
 		if err != nil {
 			t.Fatal(err)
 		}

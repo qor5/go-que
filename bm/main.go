@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/qor5/go-que"
 	"github.com/qor5/go-que/pg"
 	"gopkg.in/yaml.v2"
@@ -288,7 +288,7 @@ func (b *Benchmark) printHeader() {
 var cfile = flag.String("f", "bm.yaml", "configure file path")
 
 const cfileExample = `db: # ref: https://golang.org/pkg/database/sql/#DB
-  driver: postgres # postgres
+  driver: pgx # pgx
   source: postgres://myuser:mypassword@127.0.0.1:5432/mydb?sslmode=disable
   connMaxLifetime: 100s
   maxOpenConns: 80

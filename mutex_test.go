@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/qor5/go-que"
 	"github.com/qor5/go-que/pg"
 )
@@ -240,10 +241,11 @@ func newFaultyQueue(t *testing.T) (que.Queue, *faults) {
 func newFaultyQueueAndDB(t *testing.T) (que.Queue, *sql.DB, *faults) {
 	t.Helper()
 	newQueue() // migrates the shared database
-	connector, err := pq.NewConnector(os.Getenv("QUE_DB_SOURCE"))
+	config, err := pgx.ParseConfig(os.Getenv("QUE_DB_SOURCE"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	connector := stdlib.GetConnector(*config)
 	f := &faults{}
 	db := sql.OpenDB(faultyConnector{connector, f})
 	t.Cleanup(func() { _ = db.Close() })
