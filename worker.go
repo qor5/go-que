@@ -134,7 +134,9 @@ type Worker struct {
 	processed []int64
 
 	stopped int32
-	running int32
+	// started is set once Run starts and never cleared: a worker runs once.
+	// It tells Stop whether a run will close done.
+	started int32
 	workers sync.WaitGroup
 	// done is closed once Run has unlocked every job it locked; doneErr is
 	// what that unlock returned when Stop ended the run.
@@ -153,7 +155,7 @@ func (w *Worker) Run() error {
 	if w.isStopped() {
 		return ErrWorkerStoped
 	}
-	atomic.StoreInt32(&w.running, 1)
+	atomic.StoreInt32(&w.started, 1)
 
 	for i := 0; i < w.maxConcurrentPerformCount; i++ {
 		w.workers.Add(1)
@@ -278,7 +280,7 @@ func (w *Worker) isStopped() bool {
 // are over, so other workers can take them up (a retry, say).
 func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
-	if atomic.LoadInt32(&w.running) == 0 {
+	if atomic.LoadInt32(&w.started) == 0 {
 		return nil // Run never started, or will return at once
 	}
 	select {
