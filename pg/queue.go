@@ -73,7 +73,7 @@ func Migrate(db *sql.DB) error {
 
 // migrateLockClass and migrateLockID are the advisory lock Migrate holds.
 const (
-	migrateLockClass = 0x676f7175 // "gouq"
+	migrateLockClass = 0x676f7175 // "goqu"
 	migrateLockID    = 1
 )
 
