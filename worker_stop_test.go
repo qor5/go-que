@@ -348,7 +348,7 @@ func TestRunReturnsAtOnceWhenAStoppedRunsLockFails(t *testing.T) {
 	<-locking // the next Lock is running
 	stopped := make(chan error, 1)
 	go func() { stopped <- w.Stop(context.Background()) }()
-	time.Sleep(200 * time.Millisecond) // Stop has marked the worker stopped
+	time.Sleep(500 * time.Millisecond) // Stop has marked the worker stopped
 	close(stopping)
 	select {
 	case err := <-ran:
@@ -663,5 +663,56 @@ func TestAMutexReturningErrWorkerStopedEndsTheRunLikeAnError(t *testing.T) {
 	}
 	close(finish)
 	<-ran
+	mu.waitUnlocked(t, 7)
+}
+
+// gateUnlockMutex holds every Unlock until gate is closed; unlocking is
+// closed when the first one starts.
+type gateUnlockMutex struct {
+	scriptMutex
+	once      sync.Once
+	unlocking chan struct{}
+	gate      chan struct{}
+}
+
+func (m *gateUnlockMutex) Unlock(ctx context.Context, ids []int64) error {
+	m.once.Do(func() { close(m.unlocking) })
+	<-m.gate
+	return m.scriptMutex.Unlock(ctx, ids)
+}
+
+// While one Stop's Unlock (or the run's, taken up by that Stop) hangs on a
+// database that stopped answering, another Stop with a deadline returns
+// nil at its next tick, as before #20: only one Stop waits for that Unlock.
+func TestAStopDoesNotWaitForAnotherStopsUnlock(t *testing.T) {
+	mu := &gateUnlockMutex{scriptMutex: scriptMutex{lock: job7First}, unlocking: make(chan struct{}), gate: make(chan struct{})}
+	w, _, finish := newStoppableWorker(t, mu)
+	first := make(chan error, 1)
+	go func() { first <- w.Stop(context.Background()) }()
+	time.Sleep(100 * time.Millisecond)
+	close(finish)
+	<-mu.unlocking                     // the Unlock of job 7 hangs
+	time.Sleep(600 * time.Millisecond) // past the first Stop's tick: it waits for that Unlock
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	second := make(chan error, 1)
+	go func() { second <- w.Stop(ctx) }()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Errorf("want the second Stop to return nil but get %v", err)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Error("the second Stop waits for the first one's Unlock")
+	}
+	select {
+	case err := <-first:
+		t.Errorf("the first Stop returned %v while its Unlock still ran", err)
+	default:
+	}
+	close(mu.gate)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
 	mu.waitUnlocked(t, 7)
 }

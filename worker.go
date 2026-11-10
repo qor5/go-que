@@ -142,12 +142,17 @@ type Worker struct {
 	stopping context.Context
 	stop     context.CancelFunc
 	workers  sync.WaitGroup
-	// unlockMu makes taking the processed jobs and unlocking them one step,
-	// so a Stop returns only once the jobs it waited for are unlocked, even
-	// when the run's own unlock took them; lateErr keeps that unlock's error
-	// for the next Stop to return.
-	unlockMu sync.Mutex
-	lateErr  error
+	// late is the run's own unlock once it has taken jobs (guarded by mux).
+	// The first Stop that finds nothing left to unlock takes it up: it waits
+	// for it and returns its error, as it would have unlocked those jobs
+	// itself; any other Stop returns as before.
+	late *lateUnlock
+}
+
+type lateUnlock struct {
+	done    chan struct{} // closed once err is set
+	err     error
+	adopted bool // a Stop has taken it up (guarded by Worker.mux)
 }
 
 // Run acutal starts goroutine to execute Perform method and locks jobs.
@@ -222,26 +227,47 @@ func (w *Worker) lock() (err error) {
 
 // unlockAfterPerform unlocks the jobs the run has processed once every job
 // taken from jobC is over. Only the run locks jobs and jobC is closed, so no
-// job can be locked after this. Its error goes to the next Stop.
+// job can be locked after this. A Stop may take up its result (see late).
 func (w *Worker) unlockAfterPerform() {
 	w.workers.Wait()
-	w.unlockMu.Lock()
-	defer w.unlockMu.Unlock()
-	if err := w.unlockProcessed(); err != nil {
-		w.lateErr = err
+	w.mux.Lock()
+	processed := w.processed
+	if len(processed) == 0 {
+		w.mux.Unlock()
+		return
 	}
+	w.processed = make([]int64, 0, cap(processed))
+	late := &lateUnlock{done: make(chan struct{})}
+	w.late = late
+	w.mux.Unlock()
+	late.err = w.mutex.Unlock(context.Background(), processed)
+	close(late.done)
 }
 
-// unlockForStop unlocks the processed jobs for Stop, after any unlock the run
-// has under way, and returns its error, or else the run's unreported one.
+// unlockForStop unlocks the processed jobs for Stop and returns the result.
+// When the run's own unlock has already taken them and no Stop has taken it
+// up yet, this Stop waits for it and returns its result instead, as it
+// would have done that Unlock itself.
 func (w *Worker) unlockForStop() error {
-	w.unlockMu.Lock()
-	defer w.unlockMu.Unlock()
-	err := w.unlockProcessed()
-	if err == nil {
-		err, w.lateErr = w.lateErr, nil
+	w.mux.Lock()
+	processed := w.processed
+	if len(processed) > 0 {
+		w.processed = make([]int64, 0, cap(processed))
 	}
-	return err
+	late := w.late
+	adopt := len(processed) == 0 && late != nil && !late.adopted
+	if adopt {
+		late.adopted = true
+	}
+	w.mux.Unlock()
+	if len(processed) > 0 {
+		return w.mutex.Unlock(context.Background(), processed)
+	}
+	if adopt {
+		<-late.done
+		return late.err
+	}
+	return nil
 }
 
 func (w *Worker) work() {
@@ -320,10 +346,11 @@ func (w *Worker) isStopped() bool {
 // It blocks until ctx.Done() or all processing jobs done. It does not cancel
 // PerformContext. Jobs it leaves locked (ctx ended first, or a Lock was still
 // running) are unlocked by the run once their Perform is over, which may call
-// the mutex's Unlock after Stop and Run have returned; the next Stop returns
-// that Unlock's error. Like any failing Unlock it drops the mutex's session,
-// with the locks of anyone else using that mutex (it fails only when the
-// connection is already broken, and those locks with it).
+// the mutex's Unlock after Stop and Run have returned; the next Stop that
+// finds nothing else to unlock waits for that Unlock and returns its error.
+// Like any failing Unlock it drops the mutex's session, with the locks of
+// anyone else using that mutex (it fails only when the connection is
+// already broken, and those locks with it).
 func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
 	if w.stop != nil { // nil on a Worker NewWorker did not make
