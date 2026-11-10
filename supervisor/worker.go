@@ -33,8 +33,10 @@ type WorkerController interface {
 	// Stop stops the worker with the provided context for cancellation/timeout.
 	// Returns an error if the shutdown failed or was interrupted.
 	// It returns nil once the jobs being performed are over and unlocked (see
-	// que.Worker.Stop): jobs handed out by a Lock still running when it
-	// returns are unlocked by the worker shortly after, in the background.
+	// que.Worker.Stop), with two exceptions: jobs handed out by a Lock still
+	// running when it returns are unlocked by the worker shortly after, in
+	// the background; and of Stops called concurrently, only one waits for
+	// that unlock, the others may return before it is over.
 	Stop(ctx context.Context) error
 	// Done returns a channel that is closed when supervision ends: after Stop,
 	// or when a worker can no longer be recreated. Jobs may still be
