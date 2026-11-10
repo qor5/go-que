@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/qor5/go-que"
 )
@@ -22,7 +22,7 @@ func TestMain(m *testing.M) {
 // closer can be waiting for the mutex while a call that fails drops that
 // connection; once it gets the mutex it must not touch the mutex's state.
 func TestAnIdleCloserOfADroppedConnectionLeavesTheMutexAlone(t *testing.T) {
-	db, err := sql.Open("postgres", os.Getenv("QUE_DB_SOURCE"))
+	db, err := sql.Open("pgx", os.Getenv("QUE_DB_SOURCE"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestAnIdleCloserOfADroppedConnectionLeavesTheMutexAlone(t *testing.T) {
 // TestAnIdleConnectionEndsItsSession: closing an idle mutex connection ends
 // its database session (nothing is left to clean up in it).
 func TestAnIdleConnectionEndsItsSession(t *testing.T) {
-	db, err := sql.Open("postgres", os.Getenv("QUE_DB_SOURCE"))
+	db, err := sql.Open("pgx", os.Getenv("QUE_DB_SOURCE"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestAnIdleConnectionEndsItsSession(t *testing.T) {
 // TestAConnectionHoldingLocksIsNeverIdle: the idle closer leaves a connection
 // alone while the mutex holds jobs on it, however long it goes unused.
 func TestAConnectionHoldingLocksIsNeverIdle(t *testing.T) {
-	db, err := sql.Open("postgres", os.Getenv("QUE_DB_SOURCE"))
+	db, err := sql.Open("pgx", os.Getenv("QUE_DB_SOURCE"))
 	if err != nil {
 		t.Fatal(err)
 	}

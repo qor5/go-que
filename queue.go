@@ -99,9 +99,10 @@ type Queue interface {
 // Its locks and helper functions live in its database session, so it does not
 // work through a pooler that hands each transaction a different server
 // connection (PgBouncer's transaction mode, say): connect directly, or pool by
-// session. Prefer the pgx driver: with lib/pq a call against a database that
-// stopped answering ignores its context, and other calls on the mutex wait
-// for it (see the README).
+// session; Amazon RDS Proxy cannot be relied on either. Use the pgx driver,
+// not lib/pq: with lib/pq a call against a database that stopped answering
+// ignores its context, and other calls on the mutex wait for it (see the
+// README).
 type Mutex interface {
 	// Lock locks a set of jobs in database.
 	// These jobs unable to lock by other mutex until database connection break(closed)
