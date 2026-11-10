@@ -185,7 +185,7 @@ func (m *idleMutex) Unlock(context.Context, []int64) error { return nil }
 
 // Stop wakes a worker waiting for its next Lock: with a low lock rate, Run
 // would otherwise return only after the whole interval.
-func TestStopDoesNotWaitForTheLockRate(t *testing.T) {
+func TestRunReturnsOnStopWithoutWaitingForTheLockRate(t *testing.T) {
 	mu := &idleMutex{locked: make(chan struct{})}
 	w, err := que.NewWorker(que.WorkerOptions{
 		Queue:            "q",
@@ -249,6 +249,14 @@ func TestRunReturnsOnStopWhileAPerformGoesOn(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		close(finish)
 		t.Fatal("Run waits for a Perform after Stop")
+	}
+	time.Sleep(100 * time.Millisecond)
+	mu.mu.Lock()
+	early := len(mu.unlocked)
+	mu.mu.Unlock()
+	if early != 0 {
+		close(finish)
+		t.Fatalf("job unlocked while its Perform still runs: %v", mu.unlocked)
 	}
 	close(finish)
 	if err := w.Stop(context.Background()); err != nil {
@@ -456,5 +464,15 @@ func TestRunEndingWithAnErrorReturnsAsBefore(t *testing.T) {
 	}
 	if d := time.Since(start); d < 400*time.Millisecond {
 		t.Fatalf("want Run to take Stop's 500ms tick, as on master, but it returned after %v", d)
+	}
+}
+
+// Stop on a Worker that NewWorker did not make returns, as it did before.
+func TestStopOnAZeroWorker(t *testing.T) {
+	var w que.Worker
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := w.Stop(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
