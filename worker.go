@@ -165,7 +165,7 @@ type lateUnlock struct {
 // called first: then Run returns the error at once, as it returns
 // ErrWorkerStoped). To go on, create a new worker; it may use the same mutex,
 // which connects again on its next call. Back off between attempts: while the
-// database is unreachable each one fails.
+// database is unreachable each one fails. supervisor.StartWorker does this.
 func (w *Worker) Run() error {
 	if w.isStopped() {
 		return ErrWorkerStoped
