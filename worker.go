@@ -7,6 +7,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -53,7 +54,6 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		jobC:                      make(chan Job, count),
 		performLimiter:            newRateLimiter(opts.MaxPerformPerSecond),
 		processed:                 make([]int64, 0, count),
-		done:                      make(chan struct{}),
 		stopping:                  stopping,
 		stop:                      stop,
 	}, nil
@@ -137,17 +137,11 @@ type Worker struct {
 	processed []int64
 
 	stopped int32
-	// started is set once Run starts and never cleared: a worker runs once.
-	// It tells Stop whether a run will close done.
-	started int32
-	workers sync.WaitGroup
-	// done is closed once Run has unlocked every job it locked; doneErr is
-	// what that unlock returned when Stop ended the run.
-	done    chan struct{}
-	doneErr error
-	// stopping ends when Stop is called, waking the wait for the next Lock.
+	// stopping ends when the worker stops, cutting short the waits for the
+	// lock and perform rates.
 	stopping context.Context
 	stop     context.CancelFunc
+	workers  sync.WaitGroup
 }
 
 // Run acutal starts goroutine to execute Perform method and locks jobs.
@@ -161,7 +155,6 @@ func (w *Worker) Run() error {
 	if w.isStopped() {
 		return ErrWorkerStoped
 	}
-	atomic.StoreInt32(&w.started, 1)
 
 	for i := 0; i < w.maxConcurrentPerformCount; i++ {
 		w.workers.Add(1)
@@ -174,26 +167,25 @@ func (w *Worker) Run() error {
 }
 
 func (w *Worker) lock() (err error) {
-	// However the run ends, every job it locked is unlocked once its Perform
-	// is over, even if Stop gave up waiting: only this goroutine locks jobs,
-	// so none can be locked after this.
 	defer func() {
+		byStop := w.isStopped()
 		atomic.StoreInt32(&w.stopped, 1)
 		w.stop()
 		close(w.jobC)
-		if errors.Is(err, ErrWorkerStoped) {
-			// Stop ended the run: Run returns at once, as it always did, and
-			// the jobs are unlocked once their Perform is over
-			go w.finish(true)
+		if byStop || errors.Is(err, ErrWorkerStoped) {
+			// Stop waits for the jobs being performed and unlocks them;
+			// unlock once more after them, for what a Stop that timed out,
+			// or that returned while a Lock still ran, left locked
+			go w.unlockAfterPerform()
 			return
 		}
 		// an error ended the run: Run returns once the jobs being performed
-		// are over and unlocked, as it always did
-		w.finish(false)
+		// are over and unlocked
+		w.unlockAfterPerform()
 	}()
 	var jobs []Job
 	for {
-		_ = w.lockLimiter.Wait(w.stopping) // Stop cuts the wait short
+		_ = w.lockLimiter.Wait(w.stopping) // ends early when the worker stops
 		if w.isStopped() {
 			return ErrWorkerStoped
 		}
@@ -216,16 +208,12 @@ func (w *Worker) lock() (err error) {
 	}
 }
 
-// finish unlocks the run's jobs once their Perform is over (buffered jobs are
-// skipped), then closes done. When Stop ended the run, Stop returns what the
-// unlock returned.
-func (w *Worker) finish(byStop bool) {
+// unlockAfterPerform unlocks the jobs the run has processed once every job
+// taken from jobC is over. Only the run locks jobs and jobC is closed, so no
+// job can be locked after this.
+func (w *Worker) unlockAfterPerform() {
 	w.workers.Wait()
-	uerr := w.unlockProcessed()
-	if byStop {
-		w.doneErr = uerr
-	}
-	close(w.done)
+	_ = w.unlockProcessed() // a failure drops the mutex's session, and the locks with it
 }
 
 func (w *Worker) work() {
@@ -239,7 +227,11 @@ func (w *Worker) work() {
 			continue
 		}
 
-		w.performLimiter.Wait(context.Background())
+		_ = w.performLimiter.Wait(w.stopping) // ends early when the worker stops
+		if w.isStopped() {
+			w.asProcessed(job.ID())
+			continue
+		}
 		w.tryPerform(job)
 	}
 }
@@ -297,21 +289,26 @@ func (w *Worker) isStopped() bool {
 }
 
 // Stop stops worker execution.
-// It blocks until ctx.Done() or all processing jobs done and unlocked (a Lock
-// already running finishes first). It does not cancel PerformContext.
-// If ctx ends first, the jobs still being performed are unlocked once they
-// are over, so other workers can take them up (a retry, say).
+// It blocks until ctx.Done() or all processing jobs done. It does not cancel
+// PerformContext. Jobs it leaves locked (ctx ended first, or a Lock was still
+// running) are unlocked by the run once their Perform is over.
 func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
 	w.stop()
-	if atomic.LoadInt32(&w.started) == 0 {
-		return nil // Run never started, or will return at once
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+wait:
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if atomic.LoadInt32(&w.ongoing) == 0 {
+				break wait
+			}
+		}
 	}
-	select {
-	case <-w.done:
-		return w.doneErr
-	case <-ctx.Done():
-		// Run still unlocks the jobs once their Perform is over
-		return ctx.Err()
-	}
+
+	return w.unlockProcessed()
 }
