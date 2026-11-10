@@ -2,6 +2,8 @@ package supervisor_test
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -260,4 +262,96 @@ func TestStartWorker_ErrWorkerStopedFromTheMutexIsAFailure(t *testing.T) {
 		t.Fatalf("supervision ended without Stop: Err() = %v", ctrl.Err())
 	default:
 	}
+}
+
+// recordingHandler keeps every slog record's message and attributes.
+type recordingHandler struct {
+	mu   sync.Mutex
+	logs []string
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	line := r.Message
+	r.Attrs(func(a slog.Attr) bool { line += " " + a.String(); return true })
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.logs = append(h.logs, line)
+	return nil
+}
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+func (h *recordingHandler) all() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return strings.Join(h.logs, "\n")
+}
+
+// gatedLockMutex blocks its Lock until release is closed, then fails it.
+type gatedLockMutex struct {
+	locking chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (m *gatedLockMutex) Lock(context.Context, string, int) ([]que.Job, error) {
+	m.once.Do(func() { close(m.locking) })
+	<-m.release
+	return nil, errors.New("db connection reset")
+}
+func (m *gatedLockMutex) Unlock(context.Context, []int64) error { return nil }
+
+// A Run error that comes as Stop stops the worker is logged, not dropped.
+func TestStop_LogsARunErrorThatCameWithIt(t *testing.T) {
+	mu := &gatedLockMutex{locking: make(chan struct{}), release: make(chan struct{})}
+	h := &recordingHandler{}
+	ctrl, err := supervisor.StartWorker(context.Background(), que.WorkerOptions{
+		Queue:                     "test-queue",
+		Mutex:                     mu,
+		Perform:                   noopPerform,
+		MaxLockPerSecond:          100,
+		MaxPerformPerSecond:       100,
+		MaxConcurrentPerformCount: 1,
+	}, supervisor.WithLogger(slog.New(h)))
+	require.NoError(t, err)
+	<-mu.locking
+	stopped := make(chan error, 1)
+	go func() { stopped <- ctrl.Stop(context.Background()) }()
+	time.Sleep(100 * time.Millisecond) // Stop has cancelled; the Lock still runs
+	close(mu.release)
+	require.NoError(t, <-stopped)
+	require.Contains(t, h.all(), "db connection reset")
+}
+
+// failingLockMutex fails every Lock.
+type failingLockMutex struct{}
+
+func (failingLockMutex) Lock(context.Context, string, int) ([]que.Job, error) {
+	return nil, errors.New("simulated lock failure")
+}
+func (failingLockMutex) Unlock(context.Context, []int64) error { return nil }
+
+// OnStop sees the same Err() as anyone after Done.
+func TestOnStop_SeesErr(t *testing.T) {
+	ready := make(chan struct{})
+	var ctrl supervisor.WorkerController
+	seen := make(chan error, 1)
+	ctrl, err := supervisor.StartWorker(context.Background(), que.WorkerOptions{
+		Queue:                     "test-queue",
+		Mutex:                     failingLockMutex{},
+		Perform:                   noopPerform,
+		MaxLockPerSecond:          100,
+		MaxPerformPerSecond:       100,
+		MaxConcurrentPerformCount: 1,
+	},
+		supervisor.WithReconnectBackOff(&backoff.StopBackOff{}),
+		supervisor.WithOnStop(func(error) {
+			<-ready
+			seen <- ctrl.Err()
+		}),
+	)
+	require.NoError(t, err)
+	close(ready)
+	<-ctrl.Done()
+	require.ErrorIs(t, <-seen, supervisor.ErrReconnectBackOffStopped)
 }

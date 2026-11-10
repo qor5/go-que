@@ -32,8 +32,13 @@ var (
 type WorkerController interface {
 	// Stop stops the worker with the provided context for cancellation/timeout.
 	// Returns an error if the shutdown failed or was interrupted.
+	// It returns nil once the jobs being performed are over and unlocked (see
+	// que.Worker.Stop): jobs handed out by a Lock still running when it
+	// returns are unlocked by the worker shortly after, in the background.
 	Stop(ctx context.Context) error
-	// Done returns a channel that is closed when the worker is stopped.
+	// Done returns a channel that is closed when supervision ends: after Stop,
+	// or when a worker can no longer be recreated. Jobs may still be
+	// performing then; Stop returning nil is what says they are over.
 	Done() <-chan struct{}
 	// Err returns the error that caused the worker to stop, or nil if the worker is still active.
 	Err() error
@@ -49,7 +54,8 @@ type StartWorkerOptions struct {
 	// It is reset only when a worker that locked successfully fails, so it
 	// keeps growing while recreated workers cannot lock (the database is down),
 	// and a policy with a limit runs out over one such outage.
-	// If nil, DefaultReconnectBackOffFactory() will be used.
+	// If nil, DefaultReconnectBackOffFactory() will be used. Give each
+	// StartWorker a BackOff of its own: it is not safe for concurrent use.
 	ReconnectBackOff backoff.BackOff
 
 	// OnStop, when set, is invoked exactly once when the worker goroutine
@@ -61,6 +67,9 @@ type StartWorkerOptions struct {
 	// Worker death happens in the lock loop, outside the Perform function, so
 	// it is invisible to per-job instrumentation; OnStop is the hook to wire
 	// error reporting (e.g. an error notifier) without coupling this package to it.
+	//
+	// Err() is already set when OnStop runs, and Done() closes after it
+	// returns, so OnStop must not call Stop or wait for Done.
 	OnStop func(err error)
 }
 
@@ -155,6 +164,9 @@ func StartWorker(ctx context.Context, workerOptions que.WorkerOptions, options .
 			} else {
 				logger.InfoContext(workerCtx, "Worker stopped")
 			}
+			// set Err() before OnStop, so OnStop sees it (and a Stop called
+			// meanwhile cannot replace the cause with a clean one)
+			workerCancel(xerr)
 			if opts.OnStop != nil {
 				var cause error
 				if xerr != nil {
@@ -165,7 +177,6 @@ func StartWorker(ctx context.Context, workerOptions que.WorkerOptions, options .
 				}
 				opts.OnStop(cause)
 			}
-			workerCancel(xerr)
 		}()
 
 		workerMu.RLock()
@@ -183,6 +194,9 @@ func StartWorker(ctx context.Context, workerOptions que.WorkerOptions, options .
 			// a Stop from a failure; Run's error does not: a Mutex may return
 			// que.ErrWorkerStoped too
 			if workerCtx.Err() != nil {
+				if err != nil && !errors.Is(err, que.ErrWorkerStoped) {
+					logger.WarnContext(workerCtx, "Worker error while stopping", "error", err)
+				}
 				return nil
 			}
 			lastRunErr = err
