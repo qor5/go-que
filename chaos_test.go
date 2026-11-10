@@ -25,8 +25,9 @@ import (
 //
 // It checks that a mutex never hands out a job its caller still has, that
 // every job gets done, and that afterwards every mutex still works and no
-// connection or goroutine is left behind. Run it with QUE_CHAOS=1; it takes
-// tens of seconds.
+// connection or goroutine is left behind. Run it with QUE_CHAOS=1 and -p=1
+// (it terminates every client of the database, other packages' tests
+// included); it takes tens of seconds.
 func TestChaos(t *testing.T) {
 	if os.Getenv("QUE_CHAOS") == "" {
 		t.Skip("set QUE_CHAOS=1 to run")
@@ -101,7 +102,12 @@ func TestChaos(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Minute)
 	running := func() bool { return done.Load() < nJobs && time.Now().Before(deadline) }
 	finish := func(jb que.Job) {
-		for jb.Done(context.Background()) != nil {
+		for i := 0; jb.Done(context.Background()) != nil; i++ {
+			if i == 1000 {
+				t.Errorf("job %d: Done keeps failing", jb.ID())
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 		if _, loaded := doneIDs.LoadOrStore(jb.ID(), true); !loaded {
 			done.Add(1)
