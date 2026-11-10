@@ -29,7 +29,7 @@ import (
 // (it terminates every client of the database, other packages' tests
 // included); it takes tens of seconds.
 func TestChaos(t *testing.T) {
-	if os.Getenv("QUE_CHAOS") == "" {
+	if os.Getenv("QUE_CHAOS") != "1" { // it terminates clients and pauses containers: only on request
 		t.Skip("set QUE_CHAOS=1 to run")
 	}
 	const nJobs, nMutex, loopsPerMutex = 8000, 3, 4

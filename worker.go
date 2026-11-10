@@ -56,6 +56,7 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		processed:                 make([]int64, 0, count),
 		stopping:                  stopping,
 		stop:                      stop,
+		stopReturned:              make(chan struct{}),
 	}, nil
 }
 
@@ -142,6 +143,11 @@ type Worker struct {
 	stopping context.Context
 	stop     context.CancelFunc
 	workers  sync.WaitGroup
+	// stopReturned is closed when a Stop returns: the run unlocks only what
+	// is left after that, so a Stop that waits for the jobs unlocks and
+	// reports them itself.
+	stopReturned     chan struct{}
+	stopReturnedOnce sync.Once
 }
 
 // Run acutal starts goroutine to execute Perform method and locks jobs.
@@ -215,10 +221,12 @@ func (w *Worker) lock() (err error) {
 }
 
 // unlockAfterPerform unlocks the jobs the run has processed once every job
-// taken from jobC is over. Only the run locks jobs and jobC is closed, so no
-// job can be locked after this.
+// taken from jobC is over and a Stop has returned (the run ends only after
+// Stop was called, by the user or by the error path). Only the run locks
+// jobs and jobC is closed, so no job can be locked after this.
 func (w *Worker) unlockAfterPerform() {
 	w.workers.Wait()
+	<-w.stopReturned
 	// its error is dropped: a failure drops the mutex's session, and the
 	// locks with it, as any failing Unlock does
 	_ = w.unlockProcessed()
@@ -308,6 +316,9 @@ func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
 	if w.stop != nil { // nil on a Worker NewWorker did not make
 		w.stop()
+	}
+	if w.stopReturned != nil {
+		defer w.stopReturnedOnce.Do(func() { close(w.stopReturned) })
 	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)

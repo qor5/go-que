@@ -478,3 +478,51 @@ func TestStopOnAZeroWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Stop reports the Unlock of the jobs it waited for, as on master: when a
+// Perform ends while Stop waits, Stop still does that Unlock itself (the
+// run's own unlock only handles what Stop left behind), so it returns only
+// once the Unlock is over, with its error.
+func TestStopReturnsTheUnlockOfTheJobsItWaitedFor(t *testing.T) {
+	performing, finish := make(chan struct{}), make(chan struct{})
+	unlockErr := errors.New("unlock failed")
+	mu := &failingUnlockMutex{scriptMutex: scriptMutex{lock: func(call int) ([]que.Job, error) {
+		if call == 1 {
+			return []que.Job{fakeJob(7)}, nil
+		}
+		return nil, nil
+	}}, err: unlockErr}
+	w, err := que.NewWorker(que.WorkerOptions{
+		Queue:            "q",
+		Mutex:            mu,
+		MaxLockPerSecond: 100,
+		Perform: func(context.Context, que.Job) error {
+			close(performing)
+			<-finish
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = w.Run() }()
+	<-performing
+	stopped := make(chan error, 1)
+	go func() { stopped <- w.Stop(context.Background()) }()
+	time.Sleep(100 * time.Millisecond) // Stop waits for the Perform
+	close(finish)                      // well before Stop's next tick
+	if err := <-stopped; !errors.Is(err, unlockErr) {
+		t.Fatalf("want Stop to return its Unlock's error but get %v", err)
+	}
+}
+
+// failingUnlockMutex fails every Unlock with err, after recording it.
+type failingUnlockMutex struct {
+	scriptMutex
+	err error
+}
+
+func (m *failingUnlockMutex) Unlock(ctx context.Context, ids []int64) error {
+	_ = m.scriptMutex.Unlock(ctx, ids)
+	return m.err
+}
