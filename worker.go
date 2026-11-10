@@ -41,6 +41,7 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		performContext = context.Background()
 	}
 	var count = opts.MaxConcurrentPerformCount + opts.MaxBufferJobsCount
+	stopping, stop := context.WithCancel(context.Background())
 
 	return &Worker{
 		queue:                     opts.Queue,
@@ -53,6 +54,8 @@ func NewWorker(opts WorkerOptions) (*Worker, error) {
 		performLimiter:            newRateLimiter(opts.MaxPerformPerSecond),
 		processed:                 make([]int64, 0, count),
 		done:                      make(chan struct{}),
+		stopping:                  stopping,
+		stop:                      stop,
 	}, nil
 }
 
@@ -142,6 +145,9 @@ type Worker struct {
 	// what that unlock returned when Stop ended the run.
 	done    chan struct{}
 	doneErr error
+	// stopping ends when Stop is called, waking the wait for the next Lock.
+	stopping context.Context
+	stop     context.CancelFunc
 }
 
 // Run acutal starts goroutine to execute Perform method and locks jobs.
@@ -173,17 +179,21 @@ func (w *Worker) lock() (err error) {
 	// so none can be locked after this.
 	defer func() {
 		atomic.StoreInt32(&w.stopped, 1)
+		w.stop()
 		close(w.jobC)
-		w.workers.Wait() // performing jobs finish; buffered ones are skipped
-		uerr := w.unlockProcessed()
 		if errors.Is(err, ErrWorkerStoped) {
-			w.doneErr = uerr
+			// Stop ended the run: Run returns at once, as it always did, and
+			// the jobs are unlocked once their Perform is over
+			go w.finish(true)
+			return
 		}
-		close(w.done)
+		// an error ended the run: Run returns once the jobs being performed
+		// are over and unlocked, as it always did
+		w.finish(false)
 	}()
 	var jobs []Job
 	for {
-		w.lockLimiter.Wait(context.Background())
+		_ = w.lockLimiter.Wait(w.stopping) // Stop cuts the wait short
 		if w.isStopped() {
 			return ErrWorkerStoped
 		}
@@ -204,6 +214,18 @@ func (w *Worker) lock() (err error) {
 			return err
 		}
 	}
+}
+
+// finish unlocks the run's jobs once their Perform is over (buffered jobs are
+// skipped), then closes done. When Stop ended the run, Stop returns what the
+// unlock returned.
+func (w *Worker) finish(byStop bool) {
+	w.workers.Wait()
+	uerr := w.unlockProcessed()
+	if byStop {
+		w.doneErr = uerr
+	}
+	close(w.done)
 }
 
 func (w *Worker) work() {
@@ -275,11 +297,13 @@ func (w *Worker) isStopped() bool {
 }
 
 // Stop stops worker execution.
-// It blocks until ctx.Done() or all processing jobs done.
+// It blocks until ctx.Done() or all processing jobs done and unlocked (a Lock
+// already running finishes first). It does not cancel PerformContext.
 // If ctx ends first, the jobs still being performed are unlocked once they
 // are over, so other workers can take them up (a retry, say).
 func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
+	w.stop()
 	if atomic.LoadInt32(&w.started) == 0 {
 		return nil // Run never started, or will return at once
 	}

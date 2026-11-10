@@ -155,3 +155,89 @@ func TestStopBeforeRun(t *testing.T) {
 		t.Fatalf("want %v but get %v", que.ErrWorkerStoped, err)
 	}
 }
+
+// idleMutex never has a job; locked is closed on its first Lock.
+type idleMutex struct {
+	once   sync.Once
+	locked chan struct{}
+}
+
+func (m *idleMutex) Lock(context.Context, string, int) ([]que.Job, error) {
+	m.once.Do(func() { close(m.locked) })
+	return nil, nil
+}
+
+func (m *idleMutex) Unlock(context.Context, []int64) error { return nil }
+
+// Stop wakes a worker waiting for its next Lock: with a low lock rate, an idle
+// worker would otherwise keep Stop waiting for the whole interval.
+func TestStopDoesNotWaitForTheLockRate(t *testing.T) {
+	mu := &idleMutex{locked: make(chan struct{})}
+	w, err := que.NewWorker(que.WorkerOptions{
+		Queue:            "q",
+		Mutex:            mu,
+		MaxLockPerSecond: 0.01, // one Lock per 100s
+		Perform:          func(context.Context, que.Job) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan error, 1)
+	go func() { ran <- w.Run() }()
+	<-mu.locked
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := w.Stop(ctx); err != nil {
+		t.Fatalf("want an idle worker to stop at once but get %v", err)
+	}
+	if err := <-ran; !errors.Is(err, que.ErrWorkerStoped) {
+		t.Fatalf("want %v but get %v", que.ErrWorkerStoped, err)
+	}
+}
+
+// Run returns as soon as Stop ends the run, as it always did, even while a
+// Perform goes on; the job is still unlocked once that Perform is over.
+func TestRunReturnsOnStopWhileAPerformGoesOn(t *testing.T) {
+	mu := &slowMutex{locking: make(chan struct{}), release: make(chan struct{})}
+	close(mu.release)
+	performing, finish := make(chan struct{}), make(chan struct{})
+	w, err := que.NewWorker(que.WorkerOptions{
+		Queue:            "q",
+		Mutex:            mu,
+		MaxLockPerSecond: 100,
+		Perform: func(context.Context, que.Job) error {
+			close(performing)
+			<-finish // a Perform that does not end with Stop
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan error, 1)
+	go func() { ran <- w.Run() }()
+	<-performing
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := w.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want Stop to time out but get %v", err)
+	}
+	select {
+	case err := <-ran:
+		if !errors.Is(err, que.ErrWorkerStoped) {
+			t.Fatalf("want %v but get %v", que.ErrWorkerStoped, err)
+		}
+	case <-time.After(2 * time.Second):
+		close(finish)
+		t.Fatal("Run waits for a Perform after Stop")
+	}
+	close(finish)
+	if err := w.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.mu.Lock()
+	defer mu.mu.Unlock()
+	if len(mu.unlocked) != 1 || mu.unlocked[0] != 7 {
+		t.Fatalf("want job 7 unlocked once its Perform is over but get %v", mu.unlocked)
+	}
+}
