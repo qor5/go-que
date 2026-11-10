@@ -697,22 +697,51 @@ func TestAStopDoesNotWaitForAnotherStopsUnlock(t *testing.T) {
 	defer cancel()
 	second := make(chan error, 1)
 	go func() { second <- w.Stop(ctx) }()
+	release := sync.OnceFunc(func() { close(mu.gate) })
+	defer release()
 	select {
 	case err := <-second:
 		if err != nil {
-			t.Errorf("want the second Stop to return nil but get %v", err)
+			t.Fatalf("want the second Stop to return nil but get %v", err)
 		}
 	case <-time.After(1500 * time.Millisecond):
-		t.Error("the second Stop waits for the first one's Unlock")
+		t.Fatal("the second Stop waits for the first one's Unlock")
 	}
 	select {
 	case err := <-first:
-		t.Errorf("the first Stop returned %v while its Unlock still ran", err)
+		t.Fatalf("the first Stop returned %v while its Unlock still ran", err)
 	default:
 	}
-	close(mu.gate)
+	release()
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
 	mu.waitUnlocked(t, 7)
+}
+
+// panickingUnlockMutex panics in every Unlock.
+type panickingUnlockMutex struct{ scriptMutex }
+
+func (m *panickingUnlockMutex) Unlock(context.Context, []int64) error { panic("unlock boom") }
+
+// A panic in the run's own Unlock, which runs in a goroutine of the worker's,
+// does not crash the process: the Stop that takes it up panics with it in
+// its caller's goroutine, who can recover it, as before #20 when that Stop
+// did the Unlock itself.
+func TestAPanicInTheRunsUnlockReachesTheStopsCaller(t *testing.T) {
+	mu := &panickingUnlockMutex{scriptMutex{lock: job7First}}
+	w, _, finish := newStoppableWorker(t, mu)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_ = w.Stop(ctx)
+	close(finish) // the run's own Unlock panics, if there is one
+	time.Sleep(100 * time.Millisecond)
+	recovered := func() (e any) {
+		defer func() { e = recover() }()
+		_ = w.Stop(context.Background())
+		return nil
+	}()
+	if recovered != "unlock boom" {
+		t.Fatalf("want the Stop's caller to recover the Unlock's panic but get %v", recovered)
+	}
 }

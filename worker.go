@@ -150,9 +150,10 @@ type Worker struct {
 }
 
 type lateUnlock struct {
-	done    chan struct{} // closed once err is set
-	err     error
-	adopted bool // a Stop has taken it up (guarded by Worker.mux)
+	done     chan struct{} // closed once err or panicked is set
+	err      error
+	panicked any  // what the Unlock panicked with, if it did
+	adopted  bool // a Stop has taken it up (guarded by Worker.mux)
 }
 
 // Run acutal starts goroutine to execute Perform method and locks jobs.
@@ -240,8 +241,17 @@ func (w *Worker) unlockAfterPerform() {
 	late := &lateUnlock{done: make(chan struct{})}
 	w.late = late
 	w.mux.Unlock()
+	defer close(late.done)
+	defer func() {
+		// this goroutine is the worker's, where a panic would end the
+		// process: the Stop that takes this up panics with it instead, in
+		// its caller's goroutine, as when it did the Unlock itself
+		if e := recover(); e != nil {
+			late.panicked = e
+			log.Printf("que: unlock of jobs %v panicked: %v", processed, e)
+		}
+	}()
 	late.err = w.mutex.Unlock(context.Background(), processed)
-	close(late.done)
 }
 
 // unlockForStop unlocks the processed jobs for Stop and returns the result.
@@ -265,6 +275,9 @@ func (w *Worker) unlockForStop() error {
 	}
 	if adopt {
 		<-late.done
+		if late.panicked != nil {
+			panic(late.panicked)
+		}
 		return late.err
 	}
 	return nil
@@ -344,7 +357,9 @@ func (w *Worker) isStopped() bool {
 
 // Stop stops worker execution.
 // It blocks until ctx.Done() or all processing jobs done. It does not cancel
-// PerformContext. Jobs it leaves locked (ctx ended first, or a Lock was still
+// PerformContext. Jobs taken but not yet being performed (waiting for the
+// perform rate, or buffered) are not performed; they are unlocked for other
+// workers. Jobs it leaves locked (ctx ended first, or a Lock was still
 // running) are unlocked by the run once their Perform is over, which may call
 // the mutex's Unlock after Stop and Run have returned; the next Stop that
 // finds nothing else to unlock waits for that Unlock and returns its error.
