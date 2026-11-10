@@ -215,7 +215,9 @@ func TestRunReturnsOnStopWithoutWaitingForTheLockRate(t *testing.T) {
 }
 
 // Run returns as soon as Stop ends the run, as it always did, even while a
-// Perform goes on; the job is still unlocked once that Perform is over.
+// Perform goes on, and the job is not unlocked while that Perform runs. (The
+// later Stop below unlocks it; the run's own unlock after a Stop that timed
+// out is checked by TestAJobOutlivingAStopThatTimedOutIsRetriedElsewhere.)
 func TestRunReturnsOnStopWhileAPerformGoesOn(t *testing.T) {
 	mu := &slowMutex{locking: make(chan struct{}), release: make(chan struct{})}
 	close(mu.release)

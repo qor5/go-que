@@ -148,9 +148,11 @@ type Worker struct {
 // Run blocked current caller's goroutine and returns error when get unsolved error.
 // When Run() returned, any call to it get ErrWorkerStoped.
 //
-// Before an error returns, the jobs being performed finish. To go on, create a
-// new worker; it may use the same mutex, which connects again on its next call.
-// Back off between attempts: while the database is unreachable each one fails.
+// Before an error returns, the jobs being performed finish (unless Stop was
+// called first: then Run returns the error at once, as it returns
+// ErrWorkerStoped). To go on, create a new worker; it may use the same mutex,
+// which connects again on its next call. Back off between attempts: while the
+// database is unreachable each one fails.
 func (w *Worker) Run() error {
 	if w.isStopped() {
 		return ErrWorkerStoped
@@ -299,7 +301,9 @@ func (w *Worker) isStopped() bool {
 // PerformContext. Jobs it leaves locked (ctx ended first, or a Lock was still
 // running) are unlocked by the run once their Perform is over, which may call
 // the mutex's Unlock after Stop and Run have returned; that Unlock's error is
-// dropped, and like any failing Unlock it drops the mutex's session.
+// dropped, and like any failing Unlock it drops the mutex's session, with the
+// locks of anyone else using that mutex (it fails only when the connection
+// is already broken, and those locks with it).
 func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
 	if w.stop != nil { // nil on a Worker NewWorker did not make
