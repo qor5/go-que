@@ -125,8 +125,8 @@ func TestErrUnlockedJobs(t *testing.T) {
 
 	qs := randQueue()
 	_, err = mu.Lock(context.Background(), qs, 1)
-	if !errors.Is(err, que.ErrBadMutex) {
-		t.Fatalf("want err %v but get %v", que.ErrBadMutex, err)
+	if err != nil {
+		t.Fatalf("want the mutex still usable but get %v", err)
 	}
 }
 

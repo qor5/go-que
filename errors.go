@@ -23,7 +23,8 @@ var (
 	ErrViolateUniqueConstraint = errors.New("unique id violates unique constraint")
 
 	ErrUnlockedJobs = errors.New("unlock of unlocked jobs")
-	ErrBadMutex     = errors.New("bad mutex")
+	// Deprecated: a mutex no longer fails for good after an error; nothing returns ErrBadMutex.
+	ErrBadMutex = errors.New("bad mutex")
 
 	ErrWorkerStoped = errors.New("worker stoped")
 )
