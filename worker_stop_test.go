@@ -338,7 +338,7 @@ func TestRunReturnsAtOnceWhenAStoppedRunsLockFails(t *testing.T) {
 	<-locking // the next Lock is running
 	stopped := make(chan error, 1)
 	go func() { stopped <- w.Stop(context.Background()) }()
-	time.Sleep(50 * time.Millisecond) // Stop is waiting for the Perform
+	time.Sleep(200 * time.Millisecond) // Stop has marked the worker stopped
 	close(stopping)
 	select {
 	case err := <-ran:
@@ -403,4 +403,58 @@ func TestAStoppedWorkerDoesNotPerformAJobWaitingForThePerformRate(t *testing.T) 
 		t.Fatalf("want only the job already being performed performed but get %d", n)
 	}
 	mu.waitUnlocked(t, 1, 2)
+}
+
+// A run that an error ends returns as on master: once the jobs being
+// performed are over and unlocked, and not at once even when none is, so a
+// caller that recreates workers without backing off does not spin.
+func TestRunEndingWithAnErrorReturnsAsBefore(t *testing.T) {
+	performing, finish := make(chan struct{}), make(chan struct{})
+	mu := &scriptMutex{lock: func(call int) ([]que.Job, error) {
+		if call == 1 {
+			return []que.Job{fakeJob(7)}, nil
+		}
+		<-performing
+		return nil, errors.New("connection broken")
+	}}
+	w, err := que.NewWorker(que.WorkerOptions{
+		Queue:                     "q",
+		Mutex:                     mu,
+		MaxLockPerSecond:          100,
+		MaxConcurrentPerformCount: 2,
+		Perform: func(context.Context, que.Job) error {
+			close(performing)
+			<-finish
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan error, 1)
+	go func() { ran <- w.Run() }()
+	select {
+	case err := <-ran:
+		t.Fatalf("Run returned %v while a Perform still ran", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(finish)
+	if err := <-ran; err == nil || err.Error() != "connection broken" {
+		t.Fatalf("want the Lock's error but get %v", err)
+	}
+	mu.waitUnlocked(t, 7)
+
+	// with nothing being performed, still not at once
+	failing := &scriptMutex{lock: func(int) ([]que.Job, error) { return nil, errors.New("refused") }}
+	w, err = que.NewWorker(que.WorkerOptions{Queue: "q", Mutex: failing, MaxLockPerSecond: 100, Perform: func(context.Context, que.Job) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := w.Run(); err == nil {
+		t.Fatal("want an error")
+	}
+	if d := time.Since(start); d < 400*time.Millisecond {
+		t.Fatalf("want Run to take Stop's 500ms tick, as on master, but it returned after %v", d)
+	}
 }

@@ -169,8 +169,6 @@ func (w *Worker) Run() error {
 func (w *Worker) lock() (err error) {
 	defer func() {
 		byStop := w.isStopped()
-		atomic.StoreInt32(&w.stopped, 1)
-		w.stop()
 		close(w.jobC)
 		if byStop || errors.Is(err, ErrWorkerStoped) {
 			// Stop waits for the jobs being performed and unlocks them;
@@ -179,8 +177,9 @@ func (w *Worker) lock() (err error) {
 			go w.unlockAfterPerform()
 			return
 		}
-		// an error ended the run: Run returns once the jobs being performed
-		// are over and unlocked
+		// an error ended the run: as on master, Stop waits for the jobs
+		// being performed and unlocks them, then Run returns
+		_ = w.Stop(context.Background())
 		w.unlockAfterPerform()
 	}()
 	var jobs []Job
@@ -291,7 +290,8 @@ func (w *Worker) isStopped() bool {
 // Stop stops worker execution.
 // It blocks until ctx.Done() or all processing jobs done. It does not cancel
 // PerformContext. Jobs it leaves locked (ctx ended first, or a Lock was still
-// running) are unlocked by the run once their Perform is over.
+// running) are unlocked by the run once their Perform is over, which may call
+// the mutex's Unlock after Stop and Run have returned.
 func (w *Worker) Stop(ctx context.Context) error {
 	atomic.StoreInt32(&w.stopped, 1)
 	w.stop()
